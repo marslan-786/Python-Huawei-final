@@ -188,13 +188,12 @@ async def visual_tap(page, element, desc):
     except: pass
     return False
 
-# 🔥 NEW: SMART WAIT FUNCTION (The 5-Second Rule) 🔥
+# 🔥 SMART WAIT FUNCTION (5-Second Rule) 🔥
 async def smart_tap(page, finder_func, name, max_wait=5):
     """
     Waits up to 5 seconds for an element. 
     Checks every 1 second.
     If found, clicks and returns True.
-    If not found after 5s, returns False.
     """
     if not BOT_RUNNING: return False
     
@@ -203,15 +202,11 @@ async def smart_tap(page, finder_func, name, max_wait=5):
     for i in range(max_wait):
         if not BOT_RUNNING: return False
         try:
-            # We call the finder function to get fresh locator
             element = finder_func() 
             if await element.count() > 0:
-                # Found it! Click immediately
                 await visual_tap(page, element.first, name)
                 return True
         except: pass
-        
-        # Wait 1s and try again
         await asyncio.sleep(1)
         
     log_msg(f"❌ Timed out: {name} not found after {max_wait}s")
@@ -244,10 +239,10 @@ async def master_loop():
             
             if result == "success":
                 success = True
-                break # Break retry loop, move to next number
+                break 
             else:
                 log_msg("⚠️ Attempt Failed. Retrying same number...")
-                await asyncio.sleep(2) # Short cooldown before retry
+                await asyncio.sleep(2)
         
         if success:
             log_msg("🎉 Verified! Moving to next number...")
@@ -277,15 +272,21 @@ async def run_single_session(phone_number, country_name, proxy_config):
             try:
                 if not BOT_RUNNING: return "stopped"
                 await page.goto(BASE_URL, timeout=60000)
-                await capture_step(page, "01_HomePage", wait_time=2)
+                await capture_step(page, "01_HomePage", wait_time=3)
 
                 # --- STEP 1: REGISTER ---
-                # Use lambda so we find the element freshly every second
                 found = await smart_tap(page, lambda: page.get_by_text("Register", exact=True).or_(page.get_by_role("button", name="Register")), "Register")
                 if not found: await browser.close(); return "retry"
-                await capture_step(page, "02_RegClicked", wait_time=1) # Capture result
+                await capture_step(page, "02_RegClicked", wait_time=1)
 
-                # --- STEP 2: AGREE ---
+                # --- STEP 2: AGREE (WITH CHECKBOX FIX) ---
+                # 🔥 FIX: Click the text next to checkbox first!
+                checkbox_text = page.get_by_text("stay informed", exact=False).first
+                if await checkbox_text.count() > 0:
+                    await visual_tap(page, checkbox_text, "CheckboxText")
+                    await asyncio.sleep(0.5)
+                
+                # Now click Agree
                 found = await smart_tap(page, lambda: page.get_by_text("Agree", exact=True).or_(page.get_by_text("Next", exact=True)), "Agree")
                 if not found: await browser.close(); return "retry"
                 await capture_step(page, "03_AgreeClicked", wait_time=1)
@@ -304,7 +305,7 @@ async def run_single_session(phone_number, country_name, proxy_config):
                 if not found: await browser.close(); return "retry"
                 await capture_step(page, "05_PhoneOptClicked", wait_time=1)
 
-                # --- STEP 5: COUNTRY SWITCH (Strict Order) ---
+                # --- STEP 5: COUNTRY SWITCH (Last Step) ---
                 log_msg(f"🌍 Now switching to {country_name}...")
                 found = await smart_tap(page, lambda: page.get_by_text("Hong Kong").or_(page.get_by_text("Country/Region")), "CountrySelector")
                 if not found: await browser.close(); return "retry"
@@ -315,17 +316,15 @@ async def run_single_session(phone_number, country_name, proxy_config):
                 if await search.count() > 0:
                     await visual_tap(page, search, "Search")
                     await page.keyboard.type(country_name, delay=50)
-                    await capture_step(page, "07_Typed", wait_time=2) # Wait for results
+                    await capture_step(page, "07_Typed", wait_time=3) 
                     
-                    # Smart Selection (Result vs Input)
                     matches = page.get_by_text(country_name, exact=False)
                     if await matches.count() > 1:
-                        # Click the result (2nd item), not the search bar
                         await visual_tap(page, matches.nth(1), f"CountryResult_{country_name}")
                     elif await matches.count() == 1:
                         await visual_tap(page, matches.first, f"CountryResult_{country_name}")
                     else:
-                        log_msg(f"❌ {country_name} not found in list"); await browser.close(); return "retry"
+                        log_msg(f"❌ {country_name} not found"); await browser.close(); return "retry"
                     
                     await capture_step(page, "08_Selected", wait_time=1)
                 else:
@@ -350,7 +349,6 @@ async def run_single_session(phone_number, country_name, proxy_config):
                     log_msg("⏳ Waiting for Captcha...")
                     start_time = time.time()
                     
-                    # Captcha Wait Loop (Separate longer timeout)
                     while BOT_RUNNING:
                         if time.time() - start_time > 60:
                             log_msg("⏰ Captcha Timeout"); await browser.close(); return "retry"
@@ -365,7 +363,6 @@ async def run_single_session(phone_number, country_name, proxy_config):
                         if captcha_frame:
                             log_msg("🧩 CAPTCHA DETECTED.")
                             await capture_step(page, "11_CaptchaFound", wait_time=0.5)
-                            
                             session_id = f"sess_{int(time.time())}"
                             ai_success = await solve_captcha(page, session_id, logger=log_msg)
                             

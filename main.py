@@ -18,7 +18,6 @@ app = FastAPI()
 
 # --- CONFIGURATION ---
 CAPTURE_DIR = "./captures"
-VIDEO_PATH = f"{CAPTURE_DIR}/proof.mp4"
 NUMBERS_FILE = "numbers.txt"
 PROXY_FILE = "proxies.txt"
 BASE_URL = "https://id5.cloud.huawei.com"
@@ -27,21 +26,18 @@ BASE_URL = "https://id5.cloud.huawei.com"
 if not os.path.exists(CAPTURE_DIR): os.makedirs(CAPTURE_DIR)
 app.mount("/captures", StaticFiles(directory=CAPTURE_DIR), name="captures")
 
-# --- IMPORT SOLVER ---
 try:
     from captcha_solver import solve_captcha
 except ImportError:
     print("❌ ERROR: captcha_solver.py not found!")
     async def solve_captcha(page, session_id, logger=print): return False
 
-# --- GLOBAL SETTINGS ---
 SETTINGS = {
     "country": "Russia",
     "proxy_manual": "",
     "use_proxy_file": False
 }
 
-# --- GLOBAL STATE ---
 BOT_RUNNING = False
 logs = []
 
@@ -52,7 +48,6 @@ def log_msg(message):
     logs.insert(0, entry)
     if len(logs) > 500: logs.pop()
 
-# --- PROXY HELPER ---
 def parse_proxy_string(proxy_str):
     if not proxy_str: return None
     p = proxy_str.strip()
@@ -60,9 +55,7 @@ def parse_proxy_string(proxy_str):
     try:
         parsed = urlparse(p)
         return {"server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}", "username": parsed.username, "password": parsed.password} if parsed.username else {"server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"}
-    except Exception as e:
-        log_msg(f"⚠️ Proxy Parse Error: {e}")
-        return None
+    except: return None
 
 def get_current_proxy():
     if SETTINGS["proxy_manual"] and len(SETTINGS["proxy_manual"].strip()) > 3:
@@ -151,22 +144,29 @@ async def show_red_dot(page, x, y):
             dot.style.borderRadius = '50%'; 
             dot.style.zIndex = '2147483647'; 
             dot.style.pointerEvents = 'none'; 
+            dot.style.border = '3px solid white'; 
+            dot.style.boxShadow = '0 0 15px rgba(255,0,0,0.8)';
             document.body.appendChild(dot);
-            setTimeout(() => {{ dot.remove(); }}, 1000);
+            setTimeout(() => {{ dot.remove(); }}, 1500);
         """)
     except: pass
 
-# 🔥 UNIVERSAL TAP (Touch + Mouse + Force) 🔥
-async def visual_tap(page, element, desc, target_right=False):
+# 🔥 TARGETED TAP (Text Y + Fixed X) 🔥
+async def visual_tap(page, element, desc, mode="center"):
+    """
+    mode='center': Click center of element.
+    mode='right_edge': Find Y of element, but click X=380 (Right Edge).
+    """
     try:
         await element.scroll_into_view_if_needed()
         box = await element.bounding_box()
         
         if box:
-            if target_right:
-                x = box['x'] + box['width'] - 40 
+            if mode == "right_edge":
+                # 🔥 THE FIX: Use text Y, but force X to right side
+                x = 380 
                 y = box['y'] + box['height'] / 2
-                desc += " (Arrow)"
+                desc += " (Right Side)"
             else:
                 x = box['x'] + box['width'] / 2
                 y = box['y'] + box['height'] / 2
@@ -174,29 +174,23 @@ async def visual_tap(page, element, desc, target_right=False):
             await show_red_dot(page, x, y)
             log_msg(f"👆 Tapping {desc}...")
             
-            # 1. Physical Touch
             try:
+                # Force CDP Touch
                 client = await page.context.new_cdp_session(page)
                 await client.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [{"x": x, "y": y}]})
                 await asyncio.sleep(0.1)
                 await client.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
-            except: pass
-
-            # 2. Mouse Click (Safety Net)
-            try:
+            except:
                 await page.mouse.click(x, y)
-            except: pass
-            
             return True
         else:
             log_msg(f"⚠️ Box Missing: {desc}")
     except: pass
     return False
 
-async def secure_step(page, current_finder, next_finder_check, step_name, pre_action=None):
+async def secure_step(page, current_finder, next_finder_check, step_name, pre_action=None, tap_mode="center"):
     for i in range(5):
         if not BOT_RUNNING: return False
-        
         try:
             if await next_finder_check().count() > 0: return True
         except: pass
@@ -207,7 +201,7 @@ async def secure_step(page, current_finder, next_finder_check, step_name, pre_ac
                 if i > 0: log_msg(f"♻️ Retry {i+1}: {step_name}...")
                 if pre_action: await pre_action()
                 
-                await visual_tap(page, btn.first, step_name)
+                await visual_tap(page, btn.first, step_name, mode=tap_mode)
                 
                 await asyncio.sleep(0.5) 
                 await capture_step(page, f"{step_name}_Tap", wait_time=0)
@@ -263,25 +257,24 @@ async def run_single_session(phone_number, country_name, proxy_config):
                 await page.goto(BASE_URL, timeout=60000)
                 await capture_step(page, "01_Loaded", wait_time=2)
 
-                # 1. REGISTER (UPDATED: Just looks for 'Register' text anywhere)
-                # This finds the white Register button even if it's a div/span
+                # 1. REGISTER (Strict Button Match)
                 if not await secure_step(
                     page, 
-                    lambda: page.get_by_text("Register", exact=True), # 🔥 FIXED LOCATOR
+                    lambda: page.locator("button").filter(has_text="Register").or_(page.get_by_role("button", name="Register")), 
                     lambda: page.get_by_text("Agree", exact=True).or_(page.get_by_text("Next", exact=True)), 
                     "Register"
                 ): await browser.close(); return "retry"
 
-                # 2. AGREE (Blue Button)
+                # 2. AGREE (Strict Button Match)
                 cb_text = page.get_by_text("stay informed", exact=False).first
                 async def click_checkbox():
                     if await cb_text.count() > 0: await visual_tap(page, cb_text, "Checkbox")
 
-                # The Agree button is usually primary, but let's be strict about text
                 if not await secure_step(
                     page,
-                    lambda: page.locator("button").filter(has_text="Agree").or_(page.get_by_text("Agree", exact=True)),
-                    lambda: page.get_by_text("Next", exact=True), 
+                    # Uses button role to avoid text paragraph
+                    lambda: page.get_by_role("button", name="Agree").or_(page.get_by_role("button", name="Next")),
+                    lambda: page.get_by_text("Next", exact=True), # Target DOB Next
                     "Agree_Btn",
                     pre_action=click_checkbox
                 ): await browser.close(); return "retry"
@@ -291,7 +284,7 @@ async def run_single_session(phone_number, country_name, proxy_config):
                 await page.mouse.move(200, 800, steps=10); await page.mouse.up()
                 if not await secure_step(
                     page,
-                    lambda: page.get_by_text("Next", exact=True),
+                    lambda: page.get_by_role("button", name="Next"),
                     lambda: page.get_by_text("Use phone number", exact=False),
                     "DOB_Next"
                 ): await browser.close(); return "retry"
@@ -304,24 +297,30 @@ async def run_single_session(phone_number, country_name, proxy_config):
                     "UsePhone"
                 ): await browser.close(); return "retry"
 
-                # 5. COUNTRY SWITCH
+                # 5. COUNTRY SWITCH (Logic Update: Find text, Click Right Edge)
                 log_msg(f"🌍 Selecting {country_name}...")
                 list_opened = False
-                for i in range(4):
-                    if await page.get_by_placeholder("Search", exact=False).count() > 0:
-                        list_opened = True; break
-                    
-                    # Try Row Logic
-                    row = page.locator(".hwid-list-item").filter(has_text="Country/Region").first
-                    if await row.count() == 0: row = page.get_by_text("Country/Region").first
-                    
-                    if await row.count() > 0:
-                        await visual_tap(page, row, "CountryRow", target_right=True)
-                    else:
-                        await show_red_dot(page, 380, 200)
-                        await page.touchscreen.tap(380, 200)
-                    await asyncio.sleep(2) 
                 
+                # Check if list already open
+                if await page.get_by_placeholder("Search", exact=False).count() > 0:
+                    list_opened = True
+                else:
+                    # Find the text "Country/Region" and click to its RIGHT
+                    lbl = page.get_by_text("Country/Region").first
+                    if await lbl.count() > 0:
+                        # 🔥 KEY FIX: mode='right_edge'
+                        await visual_tap(page, lbl, "CountryRow", mode="right_edge")
+                        await asyncio.sleep(2)
+                        
+                        # Verify
+                        if await page.get_by_placeholder("Search", exact=False).count() > 0:
+                            list_opened = True
+                    else:
+                        log_msg("⚠️ Label not found, blind tap...")
+                        await page.touchscreen.tap(380, 200)
+                        await asyncio.sleep(2)
+                        if await page.get_by_placeholder("Search", exact=False).count() > 0: list_opened = True
+
                 if not list_opened:
                     log_msg("❌ List Open Failed")
                     await browser.close(); return "retry"
@@ -332,8 +331,8 @@ async def run_single_session(phone_number, country_name, proxy_config):
                 await capture_step(page, "04_Typed", wait_time=2) 
                 
                 matches = page.get_by_text(country_name, exact=False)
-                if await matches.count() > 1: await visual_tap(page, matches.nth(1), "CountryResult")
-                elif await matches.count() == 1: await visual_tap(page, matches.first, "CountryResult")
+                if await matches.count() > 1: await visual_tap(page, matches.nth(1), "Result")
+                elif await matches.count() == 1: await visual_tap(page, matches.first, "Result")
                 else: log_msg(f"❌ Country Not Found"); await browser.close(); return "retry"
                 await capture_step(page, "05_Selected", wait_time=1)
 
@@ -354,8 +353,7 @@ async def run_single_session(phone_number, country_name, proxy_config):
                     await capture_step(page, "GetCodeClick", wait_time=2)
 
                     await asyncio.sleep(2)
-                    err_popup = page.get_by_text("An unexpected problem", exact=False)
-                    if await err_popup.count() > 0:
+                    if await page.get_by_text("An unexpected problem", exact=False).count() > 0:
                         log_msg("⛔ FATAL: Not Supported")
                         await capture_step(page, "Error_Popup", wait_time=0)
                         await browser.close(); return "skipped"

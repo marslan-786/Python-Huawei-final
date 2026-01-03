@@ -9,50 +9,36 @@
         :root { --bg: #0f172a; --panel: #1e293b; --accent: #3b82f6; --text: #e2e8f0; --green: #10b981; --red: #ef4444; }
         body { margin: 0; font-family: 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); overflow-x: hidden; }
         
-        /* HEADER */
         .header { display: flex; justify-content: space-between; align-items: center; padding: 15px 20px; background: var(--panel); border-bottom: 1px solid #334155; }
         .header h2 { margin: 0; font-size: 18px; letter-spacing: 1px; }
         .icon-btn { background: none; border: none; color: var(--text); font-size: 20px; cursor: pointer; transition: 0.2s; }
         .icon-btn:hover { color: var(--accent); }
 
-        /* LAYOUT */
         .container { display: flex; height: calc(100vh - 60px); }
         
-        /* SIDEBAR */
         .sidebar { width: 0; overflow: hidden; background: #111; transition: 0.3s; border-right: 1px solid #333; display: flex; flex-direction: column; }
         .sidebar.open { width: 250px; padding: 20px; }
         .project-btn { background: var(--accent); color: white; padding: 10px; border: none; border-radius: 5px; width: 100%; cursor: pointer; margin-bottom: 20px; font-weight: bold; }
         .project-list div { padding: 10px; border-bottom: 1px solid #333; cursor: pointer; }
         .project-list div:hover { background: #222; }
 
-        /* MAIN AREA */
         .main-content { flex: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 15px; }
-        
-        /* CARDS */
         .card { background: var(--panel); padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
-        
-        /* INPUTS */
         .form-group { margin-bottom: 15px; }
         label { display: block; margin-bottom: 5px; font-size: 12px; color: #94a3b8; }
         select, input[type="text"] { width: 100%; padding: 10px; background: #0f172a; border: 1px solid #334155; color: white; border-radius: 5px; outline: none; }
         
-        /* UPLOAD BOX */
         .upload-box { border: 2px dashed #334155; padding: 20px; text-align: center; border-radius: 5px; cursor: pointer; transition: 0.2s; }
         .upload-box:hover { border-color: var(--accent); background: #1e3a8a; }
         
-        /* CONTROLS */
         .btn-control { width: 100%; padding: 15px; font-size: 18px; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; margin-top: 10px; }
         .start { background: var(--green); color: white; }
         .stop { background: var(--red); color: white; }
 
-        /* TERMINAL */
         .terminal { background: black; color: #00e676; font-family: monospace; height: 150px; overflow-y: auto; padding: 10px; border-radius: 5px; font-size: 12px; margin-top: auto; }
-        
-        /* GALLERY */
         .gallery { display: flex; gap: 5px; overflow-x: auto; padding: 10px 0; height: 100px; }
         .gallery img { height: 100%; border-radius: 5px; border: 1px solid #444; }
 
-        /* MODAL */
         .modal { display: none; position: fixed; top:0; left:0; width:100%; height:100%; background: rgba(0,0,0,0.8); align-items: center; justify-content: center; z-index: 1000; }
         .modal-content { background: var(--panel); padding: 20px; width: 400px; border-radius: 10px; }
         .modal-actions { display: flex; gap: 10px; margin-top: 20px; }
@@ -76,7 +62,7 @@
             </div>
 
             <div class="form-group">
-                <label>Or Manual Proxy (host:port or user:pass@host:port)</label>
+                <label>Or Manual Proxy (host:port)</label>
                 <input type="text" id="manualProxy" placeholder="e.g. 192.168.1.1:8080">
             </div>
 
@@ -114,17 +100,16 @@
 
                 <div class="form-group">
                     <label>Target Country</label>
-                    <select id="countrySelect">
+                    <select id="countrySelect" onchange="saveSettings()">
                         <option value="Russia">Russia</option>
-                        </select>
+                    </select>
                 </div>
 
                 <button id="mainBtn" class="btn-control start" onclick="toggleBot()">START BOT</button>
                 <button class="btn-control" style="background:#2563eb; margin-top:5px;" onclick="makeVideo()">GENERATE PROOF VIDEO</button>
             </div>
 
-            <div class="gallery" id="gallery">
-                </div>
+            <div class="gallery" id="gallery"></div>
 
             <div class="terminal" id="terminal">
                 <div>> System Initialized...</div>
@@ -134,10 +119,8 @@
     </div>
 
     <script>
-        // --- DATA ---
         const countries = ["Afghanistan","Albania","Algeria","Andorra","Angola","Argentina","Armenia","Australia","Austria","Azerbaijan","Bahrain","Bangladesh","Belarus","Belgium","Belize","Benin","Bhutan","Bolivia","Bosnia","Botswana","Brazil","Brunei","Bulgaria","Burkina Faso","Burundi","Cambodia","Cameroon","Canada","Chad","Chile","China","Colombia","Comoros","Congo","Costa Rica","Croatia","Cuba","Cyprus","Czech Republic","Denmark","Djibouti","Dominica","Ecuador","Egypt","Estonia","Ethiopia","Fiji","Finland","France","Gabon","Gambia","Georgia","Germany","Ghana","Greece","Guatemala","Guinea","Haiti","Honduras","Hong Kong","Hungary","Iceland","India","Indonesia","Iran","Iraq","Ireland","Israel","Italy","Jamaica","Japan","Jordan","Kazakhstan","Kenya","Kuwait","Kyrgyzstan","Laos","Latvia","Lebanon","Lesotho","Liberia","Libya","Liechtenstein","Lithuania","Luxembourg","Macau","Madagascar","Malawi","Malaysia","Maldives","Mali","Malta","Mauritania","Mauritius","Mexico","Moldova","Monaco","Mongolia","Montenegro","Morocco","Mozambique","Myanmar","Namibia","Nepal","Netherlands","New Zealand","Nicaragua","Niger","Nigeria","North Korea","Norway","Oman","Pakistan","Palestine","Panama","Papua New Guinea","Paraguay","Peru","Philippines","Poland","Portugal","Qatar","Romania","Russia","Rwanda","Saudi Arabia","Senegal","Serbia","Singapore","Slovakia","Slovenia","Somalia","South Africa","South Korea","Spain","Sri Lanka","Sudan","Sweden","Switzerland","Syria","Taiwan","Tajikistan","Tanzania","Thailand","Timor-Leste","Togo","Tunisia","Turkey","Turkmenistan","Uganda","Ukraine","UAE","United Kingdom","United States","Uruguay","Uzbekistan","Venezuela","Vietnam","Yemen","Zambia","Zimbabwe"];
 
-        // --- INIT ---
         window.onload = function() {
             const sel = document.getElementById('countrySelect');
             countries.forEach(c => {
@@ -145,12 +128,14 @@
                 opt.value = c; opt.innerText = c;
                 sel.appendChild(opt);
             });
-            // Load saved country
+            // Load saved settings
             const savedC = localStorage.getItem('lastCountry');
             if(savedC) sel.value = savedC;
+
+            const savedP = localStorage.getItem('manualProxy');
+            if(savedP) document.getElementById('manualProxy').value = savedP;
         };
 
-        // --- UI FUNCTIONS ---
         function toggleSidebar() { document.getElementById('sidebar').classList.toggle('open'); }
         function toggleSettings() { 
             const m = document.getElementById('settingsModal'); 
@@ -160,45 +145,40 @@
         async function uploadFile(inputId, endpoint, labelId) {
             const fileInput = document.getElementById(inputId);
             if(fileInput.files.length === 0) return;
-            
             const formData = new FormData();
             formData.append('file', fileInput.files[0]);
-
             document.getElementById(labelId).innerText = "Uploading...";
-            
             try {
                 await fetch(endpoint, { method: 'POST', body: formData });
                 document.getElementById(labelId).innerText = "✅ " + fileInput.files[0].name;
-            } catch(e) {
-                alert("Upload Failed");
-            }
+            } catch(e) { alert("Upload Failed"); }
         }
 
         async function saveSettings() {
             const country = document.getElementById('countrySelect').value;
             const proxy = document.getElementById('manualProxy').value;
-            
-            // Save locally
             localStorage.setItem('lastCountry', country);
+            localStorage.setItem('manualProxy', proxy);
 
             const formData = new FormData();
             formData.append('country', country);
             formData.append('manual_proxy', proxy);
 
             await fetch('/update_settings', { method: 'POST', body: formData });
-            toggleSettings();
-            alert("Settings Saved!");
+            // Close modal only if it's open
+            if(document.getElementById('settingsModal').style.display === 'flex') {
+                toggleSettings();
+            }
         }
 
-        // --- BOT CONTROL ---
         let isRunning = false;
-        
         async function toggleBot() {
             const btn = document.getElementById('mainBtn');
-            // Ensure settings are synced before start
-            await saveSettings(); 
-
+            // NO saveSettings() CALL HERE. IT STARTS DIRECTLY.
+            
             if (!isRunning) {
+                // Ensure backend has latest country just in case
+                await saveSettings(); 
                 await fetch('/start', {method: 'POST'});
                 btn.innerText = "🛑 STOP BOT";
                 btn.classList.remove('start'); btn.classList.add('stop');
@@ -213,48 +193,34 @@
 
         function makeVideo() {
             fetch('/generate_video', {method: 'POST'}).then(r=>r.json()).then(d=>{
-                alert(d.status === "done" ? "Video Generated at captures/proof.mp4" : "Error");
+                alert(d.status === "done" ? "Video Generated" : "Error");
             });
         }
 
-        // --- LIVE UPDATES ---
         let knownImages = new Set();
-
         async function pollStatus() {
             try {
                 const res = await fetch('/status');
                 const data = await res.json();
-                
-                // Update Logs
                 const term = document.getElementById('terminal');
                 term.innerHTML = data.logs.map(l => `<div>${l}</div>`).join('');
-
-                // Update Button State if page reloaded
                 const btn = document.getElementById('mainBtn');
                 if (data.running && !isRunning) {
                     isRunning = true;
                     btn.innerText = "🛑 STOP BOT";
                     btn.classList.remove('start'); btn.classList.add('stop');
                 }
-
-                // Append New Images Only
                 const gal = document.getElementById('gallery');
                 data.images.forEach(imgUrl => {
                     if (!knownImages.has(imgUrl)) {
                         knownImages.add(imgUrl);
-                        const img = document.createElement('img');
-                        img.src = imgUrl;
-                        // Add to start
-                        if(gal.firstChild) gal.insertBefore(img, gal.firstChild);
-                        else gal.appendChild(img);
+                        const img = document.createElement('img'); img.src = imgUrl;
+                        if(gal.firstChild) gal.insertBefore(img, gal.firstChild); else gal.appendChild(img);
                     }
                 });
-
-            } catch(e) { console.log(e); }
+            } catch(e) {}
         }
-
         setInterval(pollStatus, 2000);
-
     </script>
 </body>
 </html>

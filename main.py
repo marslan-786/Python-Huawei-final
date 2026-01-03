@@ -158,21 +158,19 @@ async def visual_tap(page, element, desc):
     except: pass
     return False
 
-# 🔥 NEW SINGLE SHOT FUNCTION 🔥
+# 🔥 SINGLE SHOT FUNCTION WITH WAIT 🔥
 async def capture_step(page, step_name, wait_time=2):
-    """Waits for X seconds, then takes ONE screenshot."""
+    """Waits for X seconds (Logic Pause), then takes ONE screenshot."""
     if not BOT_RUNNING: return
     
-    # Wait for animation to finish
+    # یہ وہ جگہ ہے جہاں یہ اگلا سٹیپ ڈھونڈنے سے پہلے رکے گا
     await asyncio.sleep(wait_time)
     
-    # Generate Timestamp
     timestamp = datetime.now().strftime("%H%M%S")
     filename = f"{CAPTURE_DIR}/{timestamp}_{step_name}.jpg"
     
     try:
         await page.screenshot(path=filename)
-        # log_msg(f"📸 Captured: {step_name}") # Optional logging
     except Exception as e:
         print(f"Capture failed: {e}")
 
@@ -227,67 +225,71 @@ async def run_single_session(phone_number, country_name, proxy_config):
                 if not BOT_RUNNING: return "stopped"
                 await page.goto(BASE_URL, timeout=60000)
                 
-                # 📸 1. SCREENSHOT BEFORE REGISTER
+                # 📸 1. Initial Load (Wait 3s for safe load)
                 await capture_step(page, "01_HomePage", wait_time=3)
 
-                # 1. REGISTER
+                # 1. REGISTER (Page Change)
                 reg_btn = page.get_by_text("Register", exact=True).first
                 if await reg_btn.count() == 0: reg_btn = page.get_by_role("button", name="Register").first
                 if await reg_btn.count() > 0:
                     await visual_tap(page, reg_btn, "Register")
-                    # 📸 2. SCREENSHOT AFTER REGISTER CLICK
+                    # 🔥 WAIT 2 SECONDS FOR PAGE LOAD
+                    log_msg("⏳ Waiting 2s for Page Load...")
                     await capture_step(page, "02_RegisterClicked", wait_time=2)
                 else:
                     log_msg("❌ Register Missing"); await browser.close(); return "retry"
 
-                # 2. TERMS
+                # 2. TERMS (Page Change)
                 agree = page.get_by_text("Agree", exact=True).first
                 if await agree.count() == 0: agree = page.get_by_text("Next", exact=True).first
                 if await agree.count() > 0:
                     await visual_tap(page, agree, "Terms")
-                    # 📸 3. SCREENSHOT AFTER AGREE
+                    # 🔥 WAIT 2 SECONDS FOR PAGE LOAD
+                    log_msg("⏳ Waiting 2s for Page Load...")
                     await capture_step(page, "03_Agreed", wait_time=2)
                 else:
                     log_msg("❌ Agree Missing"); await browser.close(); return "retry"
 
-                # 3. DOB
+                # 3. DOB (Page Change)
                 await page.mouse.move(200, 500); await page.mouse.down()
                 await page.mouse.move(200, 800, steps=10); await page.mouse.up()
                 dob_next = page.get_by_text("Next", exact=True).first
                 if await dob_next.count() > 0: 
                     await visual_tap(page, dob_next, "DOB")
-                    # 📸 4. SCREENSHOT DOB PAGE
+                    # 🔥 WAIT 2 SECONDS FOR PAGE LOAD
+                    log_msg("⏳ Waiting 2s for Page Load...")
                     await capture_step(page, "04_DOB_Done", wait_time=2)
 
-                # 4. PHONE OPTION
+                # 4. PHONE OPTION (Page Change)
                 use_phone = page.get_by_text("Use phone number", exact=False).first
                 if await use_phone.count() > 0: 
                     await visual_tap(page, use_phone, "PhoneOpt")
-                    # 📸 5. SCREENSHOT PHONE OPTION PAGE
+                    # 🔥 WAIT 2 SECONDS FOR PAGE LOAD
+                    log_msg("⏳ Waiting 2s for Page Load...")
                     await capture_step(page, "05_UsePhoneClicked", wait_time=2)
 
-                # 5. COUNTRY SWITCH
+                # 5. COUNTRY SWITCH (No Page Reload - Fast)
                 log_msg(f"🌍 Switching to {country_name}...")
                 hk = page.get_by_text("Hong Kong").first
                 if await hk.count() == 0: hk = page.get_by_text("Country/Region").first
                 
                 if await hk.count() > 0:
                     await visual_tap(page, hk, "Country")
-                    # 📸 6. SCREENSHOT COUNTRY LIST OPENED
-                    await capture_step(page, "06_CountryList", wait_time=2)
+                    # ⚡ FAST (0.5s) - Just for UI animation
+                    await capture_step(page, "06_CountryList", wait_time=0.5)
                     
                     search = page.locator("input").first
                     if await search.count() > 0:
                         await visual_tap(page, search, "Search")
                         await page.keyboard.type(country_name, delay=50)
-                        # 📸 7. SCREENSHOT COUNTRY TYPED
-                        await capture_step(page, "07_CountryTyped", wait_time=2)
+                        # ⚡ FAST (0.5s)
+                        await capture_step(page, "07_CountryTyped", wait_time=0.5)
                         
                         target_c = page.get_by_text(country_name, exact=False).first
                         if await target_c.count() > 0: 
                             await visual_tap(page, target_c, country_name)
-                            # 📸 8. SCREENSHOT COUNTRY SELECTED (BACK TO FORM)
-                            await capture_step(page, "08_CountrySelected", wait_time=2)
+                            # ⚡ FAST (0.5s)
+                            await capture_step(page, "08_CountrySelected", wait_time=0.5)
                         else:
                             log_msg(f"❌ {country_name} Not Found"); await browser.close(); return "retry"
                     else:
@@ -295,7 +297,7 @@ async def run_single_session(phone_number, country_name, proxy_config):
                 else:
                     log_msg("❌ Country Switch Missing"); await browser.close(); return "retry"
 
-                # 6. INPUT NUMBER
+                # 6. INPUT NUMBER (Fast Typing)
                 inp = page.locator("input[type='tel']").first
                 if await inp.count() == 0: inp = page.locator("input").first
                 if await inp.count() > 0:
@@ -305,14 +307,14 @@ async def run_single_session(phone_number, country_name, proxy_config):
                         await page.keyboard.type(c); await asyncio.sleep(0.05)
                     await page.touchscreen.tap(350, 100) # Close KB
                     
-                    # 📸 9. SCREENSHOT NUMBER TYPED
-                    await capture_step(page, "09_NumberTyped", wait_time=1)
+                    # ⚡ FAST (0.5s)
+                    await capture_step(page, "09_NumberTyped", wait_time=0.5)
                     
                     get_code = page.locator(".get-code-btn").first
                     if await get_code.count() == 0: get_code = page.get_by_text("Get code").first
                     if await get_code.count() > 0:
                         await visual_tap(page, get_code, "GET CODE")
-                        # 📸 10. SCREENSHOT GET CODE CLICKED
+                        # 🔥 WAIT 2s (Because it loads Captcha/Network)
                         await capture_step(page, "10_GetCodeClicked", wait_time=2)
                         
                         log_msg("⏳ Waiting for Captcha...")
@@ -331,8 +333,7 @@ async def run_single_session(phone_number, country_name, proxy_config):
                             
                             if captcha_frame:
                                 log_msg("🧩 CAPTCHA DETECTED.")
-                                # 📸 11. SCREENSHOT CAPTCHA APPEARED
-                                await capture_step(page, "11_CaptchaFound", wait_time=1)
+                                await capture_step(page, "11_CaptchaFound", wait_time=0.5)
                                 
                                 session_id = f"sess_{int(time.time())}"
                                 ai_success = await solve_captcha(page, session_id, logger=log_msg)
@@ -349,7 +350,6 @@ async def run_single_session(phone_number, country_name, proxy_config):
                                     except: pass
                                 if not is_still_there:
                                     log_msg("✅ SUCCESS!")
-                                    # 📸 13. SUCCESS SCREENSHOT
                                     await capture_step(page, "13_Success", wait_time=1)
                                     await browser.close(); return "success"
                                 else:

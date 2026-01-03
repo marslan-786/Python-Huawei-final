@@ -193,14 +193,9 @@ async def secure_step(page, current_finder, next_finder_check, step_name, pre_ac
     max_retries = 5
     for i in range(max_retries):
         if not BOT_RUNNING: return False
-        
-        # 1. Check if Next Step Loaded
         try:
-            if await next_finder_check().count() > 0:
-                return True
+            if await next_finder_check().count() > 0: return True
         except: pass
-
-        # 2. Click Current Button if exists
         try:
             btn = current_finder()
             if await btn.count() > 0:
@@ -212,48 +207,33 @@ async def secure_step(page, current_finder, next_finder_check, step_name, pre_ac
             else:
                 log_msg(f"⏳ {step_name} clicked, waiting...")
                 await asyncio.sleep(2)
-        except Exception as e:
-            log_msg(f"⚠️ Error: {e}")
-    
+        except Exception as e: log_msg(f"⚠️ Error: {e}")
     log_msg(f"❌ Failed to pass {step_name}.")
     return False
 
 # --- CORE LOGIC LOOP ---
 async def master_loop():
-    
     while BOT_RUNNING:
         current_number = get_next_number()
         target_country = SETTINGS["country"]
         proxy_cfg = get_current_proxy()
-        
         p_log = "NO"
         if proxy_cfg: p_log = f"{proxy_cfg['server']}"
-        
         log_msg(f"🎬 NEW NUMBER: {current_number} | Country: {target_country} | Proxy: {p_log}")
         
         success = False
         for attempt in range(1, 4):
             if not BOT_RUNNING: break
-            
             log_msg(f"🔹 Attempt {attempt}/3 for {current_number}")
             try:
                 result = await run_single_session(current_number, target_country, proxy_cfg)
             except Exception as e:
-                log_msg(f"🔥 Crash Error: {e}")
-                result = "retry"
-            
-            if result == "success":
-                success = True
-                break 
-            else:
-                log_msg("⚠️ Attempt Failed. Retrying...")
-                await asyncio.sleep(2)
+                log_msg(f"🔥 Crash Error: {e}"); result = "retry"
+            if result == "success": success = True; break 
+            else: log_msg("⚠️ Attempt Failed. Retrying..."); await asyncio.sleep(2)
         
-        if success:
-            log_msg("🎉 Verified! Moving to next number...")
-        else:
-            log_msg("❌ Failed 3 times. Skipping number.")
-        
+        if success: log_msg("🎉 Verified! Moving to next number...")
+        else: log_msg("❌ Failed 3 times. Skipping number.")
         await asyncio.sleep(1)
 
 async def run_single_session(phone_number, country_name, proxy_config):
@@ -279,7 +259,7 @@ async def run_single_session(phone_number, country_name, proxy_config):
                 await page.goto(BASE_URL, timeout=60000)
                 await capture_step(page, "01_HomePage", wait_time=2)
 
-                # --- STEP 1: REGISTER -> AGREE ---
+                # STEP 1: REGISTER -> AGREE
                 success = await secure_step(
                     page, 
                     lambda: page.get_by_text("Register", exact=True).or_(page.get_by_role("button", name="Register")),
@@ -288,41 +268,32 @@ async def run_single_session(phone_number, country_name, proxy_config):
                 )
                 if not success: await browser.close(); return "retry"
 
-                # --- STEP 2: AGREE PAGE (WITH DUAL CAPTURE) ---
-                log_msg("⏳ Waiting for Agree Page Content...")
-                
-                # 1. Find the Text (Don't Click Yet)
+                # STEP 2: AGREE PAGE (WITH CHECKBOX FIX)
+                log_msg("⏳ Waiting for Agree Page...")
                 cb_text = page.get_by_text("stay informed", exact=False).first
-                try:
-                    await cb_text.wait_for(timeout=10000) # Wait up to 10s for page load
-                except:
-                    log_msg("⚠️ Checkbox text not found, trying Button directly...")
+                try: await cb_text.wait_for(timeout=10000)
+                except: log_msg("⚠️ Checkbox text not found, trying Button directly...")
 
-                # 📸 CAPTURE 1: BEFORE CLICK (Unticked)
+                # 📸 Capture Unticked
                 await capture_step(page, "03_01_Agree_Unticked", wait_time=0.5)
 
-                # 2. Click Checkbox Logic
                 async def click_checkbox():
                     if await cb_text.count() > 0:
                         await visual_tap(page, cb_text, "CheckboxText")
-                        # 📸 CAPTURE 2: AFTER CLICK (Ticked)
-                        # We capture INSIDE here to make sure we captured the action
                         await capture_step(page, "03_02_Agree_Ticked", wait_time=1)
 
-                # 3. Click Agree (Secure Step)
                 success = await secure_step(
                     page,
                     lambda: page.get_by_text("Agree", exact=True).or_(page.get_by_text("Next", exact=True)),
-                    lambda: page.get_by_text("Next", exact=True), # Target: DOB Next
+                    lambda: page.get_by_text("Next", exact=True),
                     "Agree_Btn",
                     pre_action=click_checkbox
                 )
                 if not success: await browser.close(); return "retry"
 
-                # --- STEP 3: DOB -> PHONE OPTION ---
+                # STEP 3: DOB -> PHONE OPTION
                 await page.mouse.move(200, 500); await page.mouse.down()
                 await page.mouse.move(200, 800, steps=10); await page.mouse.up()
-                
                 success = await secure_step(
                     page,
                     lambda: page.get_by_text("Next", exact=True),
@@ -331,7 +302,7 @@ async def run_single_session(phone_number, country_name, proxy_config):
                 )
                 if not success: await browser.close(); return "retry"
 
-                # --- STEP 4: USE PHONE NUMBER -> COUNTRY SELECTOR ---
+                # STEP 4: USE PHONE NUMBER -> COUNTRY SELECTOR
                 success = await secure_step(
                     page,
                     lambda: page.get_by_text("Use phone number", exact=False),
@@ -340,17 +311,40 @@ async def run_single_session(phone_number, country_name, proxy_config):
                 )
                 if not success: await browser.close(); return "retry"
 
-                # --- STEP 5: COUNTRY SWITCH ---
+                # --- 🔥 ROBUST COUNTRY SWITCH START 🔥 ---
                 log_msg(f"🌍 Switching to {country_name}...")
                 
-                success = await secure_step(
-                    page,
-                    lambda: page.get_by_text("Hong Kong").or_(page.get_by_text("Country/Region")),
-                    lambda: page.locator("input"),
-                    "CountrySelector"
-                )
-                if not success: await browser.close(); return "retry"
+                # Loop to ensure Country List Opens
+                list_opened = False
+                for i in range(4):
+                    # 1. Check if Search Bar is detected (Success Condition)
+                    if await page.locator("input").count() > 0:
+                        list_opened = True; break
+                    
+                    # 2. If not, Click 'Hong Kong' or 'Arrow'
+                    # We try multiple selectors for better hit rate
+                    hk_text = page.get_by_text("Hong Kong").first
+                    hk_arrow = page.locator(".hwid-list-item-arrow").first # Common arrow class
+                    general_selector = page.get_by_text("Country/Region").first
+                    
+                    target = None
+                    if await hk_text.count() > 0: target = hk_text
+                    elif await hk_arrow.count() > 0: target = hk_arrow
+                    elif await general_selector.count() > 0: target = general_selector
+
+                    if target:
+                        log_msg(f"♻️ Clicking Country Selector (Attempt {i+1})...")
+                        await visual_tap(page, target, "CountrySelector")
+                        await asyncio.sleep(2) # Wait for animation
+                    else:
+                        log_msg("⚠️ Selector text missing, retrying...")
                 
+                if not list_opened:
+                    log_msg("❌ Failed to open Country List after retries.")
+                    await browser.close(); return "retry"
+                
+                # If List Opened -> Search & Select
+                await capture_step(page, "06_ListOpened", wait_time=0.5)
                 search = page.locator("input").first
                 await visual_tap(page, search, "Search")
                 await page.keyboard.type(country_name, delay=50)
@@ -365,8 +359,9 @@ async def run_single_session(phone_number, country_name, proxy_config):
                     log_msg(f"❌ {country_name} not found"); await browser.close(); return "retry"
                 
                 await capture_step(page, "08_Selected", wait_time=1)
+                # --- 🔥 ROBUST COUNTRY SWITCH END 🔥 ---
 
-                # --- STEP 6: INPUT NUMBER ---
+                # STEP 6: INPUT NUMBER
                 inp = page.locator("input[type='tel']").first
                 if await inp.count() == 0: inp = page.locator("input").first
                 

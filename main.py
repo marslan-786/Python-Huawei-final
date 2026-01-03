@@ -268,13 +268,12 @@ async def run_single_session(phone_number, country_name, proxy_config):
                 )
                 if not success: await browser.close(); return "retry"
 
-                # STEP 2: AGREE PAGE (WITH CHECKBOX FIX)
+                # STEP 2: AGREE PAGE
                 log_msg("⏳ Waiting for Agree Page...")
                 cb_text = page.get_by_text("stay informed", exact=False).first
                 try: await cb_text.wait_for(timeout=10000)
                 except: log_msg("⚠️ Checkbox text not found, trying Button directly...")
 
-                # 📸 Capture Unticked
                 await capture_step(page, "03_01_Agree_Unticked", wait_time=0.5)
 
                 async def click_checkbox():
@@ -303,44 +302,49 @@ async def run_single_session(phone_number, country_name, proxy_config):
                 if not success: await browser.close(); return "retry"
 
                 # STEP 4: USE PHONE NUMBER -> COUNTRY SELECTOR
+                # Notice: We changed detector here. We don't verify against 'Country/Region' clickability, just visibility
                 success = await secure_step(
                     page,
                     lambda: page.get_by_text("Use phone number", exact=False),
-                    lambda: page.get_by_text("Hong Kong").or_(page.get_by_text("Country/Region")),
+                    lambda: page.get_by_text("Country/Region"), 
                     "UsePhone"
                 )
                 if not success: await browser.close(); return "retry"
 
-                # --- 🔥 ROBUST COUNTRY SWITCH START 🔥 ---
+                # --- 🔥 TARGET ARROW ONLY 🔥 ---
                 log_msg(f"🌍 Switching to {country_name}...")
                 
-                # Loop to ensure Country List Opens
                 list_opened = False
                 for i in range(4):
-                    # 1. Check if Search Bar is detected (Success Condition)
+                    # Check if Search Input exists (Means list is open)
                     if await page.locator("input").count() > 0:
                         list_opened = True; break
                     
-                    # 2. If not, Click 'Hong Kong' or 'Arrow'
-                    # We try multiple selectors for better hit rate
-                    hk_text = page.get_by_text("Hong Kong").first
-                    hk_arrow = page.locator(".hwid-list-item-arrow").first # Common arrow class
-                    general_selector = page.get_by_text("Country/Region").first
+                    # 🎯 TARGET: Find the Arrow
+                    # Strategy: Find 'Country/Region' text, then find the arrow inside that list item container
+                    arrow = page.locator(".hwid-list-item-arrow").first # Best specific selector
                     
-                    target = None
-                    if await hk_text.count() > 0: target = hk_text
-                    elif await hk_arrow.count() > 0: target = hk_arrow
-                    elif await general_selector.count() > 0: target = general_selector
-
-                    if target:
-                        log_msg(f"♻️ Clicking Country Selector (Attempt {i+1})...")
-                        await visual_tap(page, target, "CountrySelector")
-                        await asyncio.sleep(2) # Wait for animation
+                    # Fallback: Click on right side of screen aligned with 'Country/Region'
+                    if await arrow.count() > 0:
+                        log_msg("🎯 Found Arrow! Clicking...")
+                        await visual_tap(page, arrow, "ArrowClick")
                     else:
-                        log_msg("⚠️ Selector text missing, retrying...")
+                        log_msg("⚠️ Arrow not found via class. Trying coordinate tap...")
+                        # Fallback Coordinate Click (Right side of Country/Region)
+                        label = page.get_by_text("Country/Region").first
+                        if await label.count() > 0:
+                            box = await label.bounding_box()
+                            if box:
+                                # Click far right on the same Y-axis
+                                x_right = 350 # Right side of mobile screen
+                                y_center = box['y'] + (box['height'] / 2)
+                                await page.touchscreen.tap(x_right, y_center)
+                                log_msg("👆 Tapped Right Side Coordinates")
+                    
+                    await asyncio.sleep(2) 
                 
                 if not list_opened:
-                    log_msg("❌ Failed to open Country List after retries.")
+                    log_msg("❌ Failed to open Country List.")
                     await browser.close(); return "retry"
                 
                 # If List Opened -> Search & Select
@@ -359,7 +363,7 @@ async def run_single_session(phone_number, country_name, proxy_config):
                     log_msg(f"❌ {country_name} not found"); await browser.close(); return "retry"
                 
                 await capture_step(page, "08_Selected", wait_time=1)
-                # --- 🔥 ROBUST COUNTRY SWITCH END 🔥 ---
+                # --- 🔥 END ARROW LOGIC 🔥 ---
 
                 # STEP 6: INPUT NUMBER
                 inp = page.locator("input[type='tel']").first

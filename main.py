@@ -3,7 +3,7 @@ import asyncio
 import random
 import time
 import shutil
-from typing import Optional
+from typing import Optional # <--- Fixed Missing Import
 from urllib.parse import urlparse
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form
 from fastapi.responses import JSONResponse, FileResponse
@@ -15,7 +15,7 @@ CAPTURE_DIR = "./captures"
 NUMBERS_FILE = "numbers.txt"
 PROXY_FILE = "proxies.txt"
 BASE_URL = "https://id5.cloud.huawei.com"
-CONCURRENT_WORKERS = 10  # 🔥 10 Parallel Tabs
+CONCURRENT_WORKERS = 10  # 🔥 Strictly 10 Parallel Processes
 
 app = FastAPI()
 
@@ -39,15 +39,14 @@ SETTINGS = {
 # --- GLOBAL STATE ---
 BOT_RUNNING = False
 NUMBER_QUEUE = asyncio.Queue()
-# Note: We keep 'logs' for the frontend terminal, but only push clean messages
 logs = [] 
+active_workers_count = 0 # To track completion
 
 def log_msg(message):
-    # Only keep last 50 logs for UI
     entry = f"[{time.strftime('%H:%M:%S')}] {message}"
-    print(entry) # Console
+    print(entry)
     logs.insert(0, entry)
-    if len(logs) > 50: logs.pop()
+    if len(logs) > 100: logs.pop()
 
 # --- PROXY HELPER ---
 def parse_proxy(proxy_str):
@@ -64,10 +63,8 @@ def parse_proxy(proxy_str):
     except: return None
 
 def get_proxy():
-    # 1. Manual
     if SETTINGS["proxy_manual"] and len(SETTINGS["proxy_manual"]) > 5: 
         return parse_proxy(SETTINGS["proxy_manual"])
-    # 2. File
     if os.path.exists(PROXY_FILE):
         try:
             with open(PROXY_FILE, 'r') as f:
@@ -76,7 +73,7 @@ def get_proxy():
         except: pass
     return None
 
-# --- API ENDPOINTS (Connected to index.html) ---
+# --- API ENDPOINTS ---
 
 @app.get("/")
 async def read_index():
@@ -84,13 +81,12 @@ async def read_index():
 
 @app.get("/status")
 async def get_status():
-    # Frontend expects specific JSON format
     return JSONResponse({
         "logs": logs, 
-        "images": [], # No images anymore
+        "images": [], 
         "running": BOT_RUNNING,
         "current_country": SETTINGS["country"],
-        "current_proxy": SETTINGS["proxy_manual"] if SETTINGS["proxy_manual"] else "Auto/File"
+        "current_proxy": "Active" if get_proxy() else "None"
     })
 
 @app.post("/update_settings")
@@ -127,13 +123,16 @@ async def start_bot(bt: BackgroundTasks):
                 return {"status": "error"}
 
             # Fill Queue
+            # Clear old queue if any
+            while not NUMBER_QUEUE.empty(): NUMBER_QUEUE.get_nowait()
+            
             for n in nums: NUMBER_QUEUE.put_nowait(n)
             
-            log_msg(f"🚀 Starting {CONCURRENT_WORKERS} Workers for {len(nums)} numbers...")
+            log_msg(f"🚀 Loaded {len(nums)} Numbers. Starting Batch of {CONCURRENT_WORKERS}...")
             
-            # Start Workers
+            # Start Exactly 10 Workers
             for i in range(CONCURRENT_WORKERS):
-                bt.add_task(worker_loop, i)
+                bt.add_task(worker_loop, i+1)
         else:
             log_msg("⚠️ numbers.txt not found!")
             BOT_RUNNING = False
@@ -143,34 +142,42 @@ async def start_bot(bt: BackgroundTasks):
 async def stop_bot():
     global BOT_RUNNING
     BOT_RUNNING = False
-    log_msg("🛑 Stopping all workers...")
-    # Clear queue to stop workers faster
+    log_msg("🛑 STOPPING... Waiting for active tasks to finish.")
+    # Empty queue to stop new numbers
     while not NUMBER_QUEUE.empty():
         try: NUMBER_QUEUE.get_nowait()
         except: break
     return {"status": "stopping"}
 
-# --- WORKER LOGIC (10x Speed) ---
+# --- WORKER LOGIC (Strict Batching) ---
 async def worker_loop(worker_id):
+    global active_workers_count, BOT_RUNNING
+    active_workers_count += 1
+    
     while BOT_RUNNING:
         try:
             # Get number from queue (Non-blocking)
             number = NUMBER_QUEUE.get_nowait()
         except asyncio.QueueEmpty:
-            break # Queue finished
+            break # No more numbers, worker retires
         
         try:
-            log_msg(f"🔹 Processing: {number}")
-            await process_number(number)
+            # Process
+            await process_number(number, worker_id)
         except Exception as e:
-            log_msg(f"⚠️ Worker Error: {e}")
+            log_msg(f"⚠️ Worker {worker_id} Crash: {e}")
         
-        await asyncio.sleep(1)
+        await asyncio.sleep(1) # Small breather
     
-    if worker_id == 0: log_msg("✅ All tasks finished.")
+    active_workers_count -= 1
+    if active_workers_count == 0:
+        log_msg("✅✅ PROJECT COMPLETE: ALL NUMBERS PROCESSED ✅✅")
+        BOT_RUNNING = False
 
-# --- CORE LOGIC (Cleaned & Fast) ---
-async def process_number(phone_number):
+# --- CORE LOGIC (With Detailed Updates) ---
+async def process_number(phone_number, wid):
+    log_msg(f"🔹 [Worker {wid}] Starting: {phone_number}")
+    
     proxy = get_proxy()
     target_country = SETTINGS["country"]
     
@@ -183,7 +190,6 @@ async def process_number(phone_number):
 
         try:
             browser = await p.chromium.launch(**launch_args)
-            # Create context with mobile view
             context = await browser.new_context(
                 viewport={'width': 412, 'height': 950},
                 user_agent="Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.6167.101 Mobile Safari/537.36"
@@ -194,15 +200,16 @@ async def process_number(phone_number):
                 if not BOT_RUNNING: await browser.close(); return
                 
                 # Navigate
+                # log_msg(f"➡️ [Worker {wid}] Navigating...") 
                 await page.goto(BASE_URL, timeout=60000)
                 
                 # 1. Register
-                # Use .first to be fast, minimal waiting
                 try:
                     reg = page.get_by_text("Register", exact=True).or_(page.get_by_role("button", name="Register")).first
-                    await reg.click(timeout=5000)
+                    await reg.click(timeout=8000)
                 except:
-                    await browser.close(); return # Skip if site didn't load
+                    log_msg(f"❌ [Worker {wid}] Load Failed: {phone_number}")
+                    await browser.close(); return 
 
                 # 2. Agree (Tick Box)
                 try:
@@ -216,7 +223,7 @@ async def process_number(phone_number):
                 # 3. DOB
                 try:
                     await page.mouse.move(200, 500); await page.mouse.down()
-                    await page.mouse.move(200, 800, steps=5); await page.mouse.up() # Fast scroll
+                    await page.mouse.move(200, 800, steps=5); await page.mouse.up() 
                     dob = page.get_by_text("Next", exact=True).first
                     await dob.click()
                 except: pass
@@ -227,10 +234,9 @@ async def process_number(phone_number):
                     await phone_opt.click()
                 except: pass
 
-                # 5. Country Switch (Arrow Logic)
+                # 5. Country Switch
+                # log_msg(f"🌍 [Worker {wid}] Setting Country: {target_country}")
                 try:
-                    # Check if already correct country? (Optimization)
-                    # If not, try opening list
                     list_opened = False
                     
                     # Try Arrow
@@ -239,7 +245,6 @@ async def process_number(phone_number):
                         await arrow.click()
                         list_opened = True
                     else:
-                        # Try Label Coords
                         label = page.get_by_text("Country/Region").first
                         if await label.count() > 0:
                             box = await label.bounding_box()
@@ -248,10 +253,9 @@ async def process_number(phone_number):
                                 list_opened = True
                     
                     if list_opened:
-                        # Wait briefly for search input
                         search = page.get_by_placeholder("Search", exact=False).first
                         await search.click(timeout=3000)
-                        await page.keyboard.type(target_country, delay=10) # Fast typing
+                        await page.keyboard.type(target_country, delay=10) 
                         await asyncio.sleep(1)
                         
                         matches = page.get_by_text(target_country, exact=False)
@@ -270,21 +274,19 @@ async def process_number(phone_number):
                     await get_code.click()
                     
                     # 🔥 CHECK ERROR 🔥
-                    try:
-                        err = page.get_by_text("An unexpected problem", exact=False)
-                        if await err.count() > 0:
-                            log_msg(f"⛔ Error: {phone_number} Not Supported. Skipping.")
-                            await browser.close(); return
-                    except: pass
-
+                    await asyncio.sleep(1)
+                    err = page.get_by_text("An unexpected problem", exact=False)
+                    if await err.count() > 0:
+                        log_msg(f"⛔ [Worker {wid}] Not Supported (Error Popup): {phone_number}")
+                        await browser.close(); return
+                    
                     # 🔥 CAPTCHA LOOP 🔥
-                    log_msg(f"⏳ Checking Captcha for {phone_number}...")
+                    log_msg(f"⏳ [Worker {wid}] Waiting for Captcha: {phone_number}")
                     
                     start_time = time.time()
                     while time.time() - start_time < 60:
                         if not BOT_RUNNING: break
                         
-                        # Fast check for captcha
                         captcha_frame = None
                         for frame in page.frames:
                             try:
@@ -293,16 +295,17 @@ async def process_number(phone_number):
                             except: pass
                         
                         if captcha_frame:
-                            log_msg(f"🧩 Solving Captcha: {phone_number}")
+                            log_msg(f"🧩 [Worker {wid}] Solving Captcha...")
                             await asyncio.sleep(5) # Mandatory wait for load
                             
                             session_id = f"sess_{random.randint(1000,9999)}"
                             solved = await solve_captcha(page, session_id)
                             
                             if not solved: 
+                                log_msg(f"⚠️ [Worker {wid}] Solver Failed: {phone_number}")
                                 await browser.close(); return
                             
-                            await asyncio.sleep(5) # Wait for result
+                            await asyncio.sleep(5) 
                             
                             # Verify
                             still_there = False
@@ -313,12 +316,14 @@ async def process_number(phone_number):
                                 except: pass
                             
                             if not still_there:
-                                log_msg(f"✅ SUCCESS: {phone_number} Verified!")
+                                log_msg(f"✅ [Worker {wid}] SUCCESS: {phone_number} Verified!")
                                 await browser.close(); return
                             else:
                                 await asyncio.sleep(2); continue # Retry loop
                         
                         await asyncio.sleep(1)
+                    
+                    log_msg(f"⏰ [Worker {wid}] Timeout (No Captcha/Code): {phone_number}")
 
                 except Exception: pass
 

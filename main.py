@@ -5,6 +5,7 @@ import random
 import time
 import shutil
 import imageio
+import subprocess  # <--- Added for auto-install
 from datetime import datetime
 from typing import Optional
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form
@@ -28,7 +29,7 @@ BASE_URL = "https://id5.cloud.huawei.com"
 
 # --- GLOBAL SETTINGS ---
 SETTINGS = {
-    "country": "Russia",  # Default
+    "country": "Russia",
     "proxy_manual": "",
     "use_proxy_file": False
 }
@@ -36,6 +37,17 @@ SETTINGS = {
 app = FastAPI()
 if not os.path.exists(CAPTURE_DIR): os.makedirs(CAPTURE_DIR)
 app.mount("/captures", StaticFiles(directory=CAPTURE_DIR), name="captures")
+
+# --- AUTO INSTALL BROWSERS ON STARTUP ---
+@app.on_event("startup")
+async def startup_event():
+    print("🔄 Checking Playwright Browsers...")
+    try:
+        # Check if we can execute simple logic, if not install
+        subprocess.run(["playwright", "install", "chromium"], check=True)
+        print("✅ Playwright Browsers Installed/Verified.")
+    except Exception as e:
+        print(f"⚠️ Warning during browser install: {e}")
 
 # --- GLOBAL STATE ---
 BOT_RUNNING = False
@@ -65,7 +77,6 @@ def get_current_proxy():
                 lines = [l.strip() for l in f.readlines() if l.strip()]
             if lines:
                 selected = random.choice(lines)
-                # Format check
                 if "://" not in selected: selected = f"http://{selected}"
                 return {"server": selected}
         except: pass
@@ -197,7 +208,6 @@ async def master_loop():
         
         log_msg(f"🎬 SESSION START | Country: {target_country} | Proxy: {'YES' if proxy_cfg else 'NO'}")
         
-        # Wrapped in try/except to prevent silent thread death
         try:
             result = await run_single_session(current_number, target_country, proxy_cfg)
         except Exception as e:
@@ -217,22 +227,27 @@ async def master_loop():
         await asyncio.sleep(2)
 
 async def run_single_session(phone_number, country_name, proxy_config):
-    # Try/Except block starts OUTSIDE async_playwright to catch launch errors
     try:
         async with async_playwright() as p:
+            # TRY TO USE INSTALLED CHROMIUM
+            try:
+                browser = await p.chromium.launch(
+                    headless=True,
+                    args=["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-dev-shm-usage"],
+                    proxy=proxy_config
+                )
+            except Exception as e:
+                log_msg("⚠️ Browser Launch Failed. Retrying installation...")
+                subprocess.run(["playwright", "install", "chromium"], check=True)
+                browser = await p.chromium.launch(
+                    headless=True,
+                    args=["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-dev-shm-usage"],
+                    proxy=proxy_config
+                )
+
             pixel_5 = p.devices['Pixel 5'].copy()
             pixel_5['user_agent'] = "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.6167.101 Mobile Safari/537.36"
             pixel_5['viewport'] = {'width': 412, 'height': 950} 
-
-            launch_args = {
-                "headless": True,
-                "args": ["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-dev-shm-usage"],
-            }
-            if proxy_config:
-                launch_args["proxy"] = proxy_config
-
-            log_msg("🔄 Launching Browser...")
-            browser = await p.chromium.launch(**launch_args)
             
             context = await browser.new_context(**pixel_5, locale="en-US")
             page = await context.new_page()
@@ -377,5 +392,5 @@ async def run_single_session(phone_number, country_name, proxy_config):
                 return "retry"
                 
     except Exception as launch_e:
-        log_msg(f"❌ BROWSER LAUNCH FAILED: {launch_e}")
+        log_msg(f"❌ BROWSER LAUNCH FAIL: {launch_e}")
         return "retry"

@@ -159,7 +159,7 @@ async def visual_tap(page, element, desc):
     return False
 
 # 🔥 SINGLE SHOT FUNCTION WITH WAIT 🔥
-async def capture_step(page, step_name, wait_time=2):
+async def capture_step(page, step_name, wait_time=3):
     """Waits for X seconds (Logic Pause), then takes ONE screenshot."""
     if not BOT_RUNNING: return
     
@@ -235,7 +235,7 @@ async def run_single_session(phone_number, country_name, proxy_config):
                     await visual_tap(page, reg_btn, "Register")
                     # 🔥 WAIT 2 SECONDS FOR PAGE LOAD
                     log_msg("⏳ Waiting 2s for Page Load...")
-                    await capture_step(page, "02_RegisterClicked", wait_time=2)
+                    await capture_step(page, "02_RegisterClicked", wait_time=3)
                 else:
                     log_msg("❌ Register Missing"); await browser.close(); return "retry"
 
@@ -246,7 +246,7 @@ async def run_single_session(phone_number, country_name, proxy_config):
                     await visual_tap(page, agree, "Terms")
                     # 🔥 WAIT 2 SECONDS FOR PAGE LOAD
                     log_msg("⏳ Waiting 2s for Page Load...")
-                    await capture_step(page, "03_Agreed", wait_time=2)
+                    await capture_step(page, "03_Agreed", wait_time=3)
                 else:
                     log_msg("❌ Agree Missing"); await browser.close(); return "retry"
 
@@ -258,7 +258,7 @@ async def run_single_session(phone_number, country_name, proxy_config):
                     await visual_tap(page, dob_next, "DOB")
                     # 🔥 WAIT 2 SECONDS FOR PAGE LOAD
                     log_msg("⏳ Waiting 2s for Page Load...")
-                    await capture_step(page, "04_DOB_Done", wait_time=2)
+                    await capture_step(page, "04_DOB_Done", wait_time=3)
 
                 # 4. PHONE OPTION (Page Change)
                 use_phone = page.get_by_text("Use phone number", exact=False).first
@@ -266,7 +266,7 @@ async def run_single_session(phone_number, country_name, proxy_config):
                     await visual_tap(page, use_phone, "PhoneOpt")
                     # 🔥 WAIT 2 SECONDS FOR PAGE LOAD
                     log_msg("⏳ Waiting 2s for Page Load...")
-                    await capture_step(page, "05_UsePhoneClicked", wait_time=2)
+                    await capture_step(page, "05_UsePhoneClicked", wait_time=3)
 
                 # 5. COUNTRY SWITCH (No Page Reload - Fast)
                 log_msg(f"🌍 Switching to {country_name}...")
@@ -315,7 +315,7 @@ async def run_single_session(phone_number, country_name, proxy_config):
                     if await get_code.count() > 0:
                         await visual_tap(page, get_code, "GET CODE")
                         # 🔥 WAIT 2s (Because it loads Captcha/Network)
-                        await capture_step(page, "10_GetCodeClicked", wait_time=2)
+                        await capture_step(page, "10_GetCodeClicked", wait_time=3)
                         
                         log_msg("⏳ Waiting for Captcha...")
                         start_time = time.time()

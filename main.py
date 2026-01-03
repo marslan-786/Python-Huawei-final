@@ -38,11 +38,10 @@ NUMBER_QUEUE = asyncio.Queue()
 logs = []
 
 def log_msg(message):
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    entry = f"[{timestamp}] {message}"
+    entry = f"[{time.strftime('%H:%M:%S')}] {message}"
     print(entry)
     logs.insert(0, entry)
-    if len(logs) > 100: logs.pop()
+    if len(logs) > 200: logs.pop()
 
 def get_proxy():
     if SETTINGS["proxy_manual"] and len(SETTINGS["proxy_manual"]) > 5:
@@ -121,7 +120,7 @@ async def stop_bot():
     log_msg("🛑 Stopping...")
     return {"status": "stopping"}
 
-# --- 🔥 HELPER: VISUAL TAP (THE MAGIC) 🔥 ---
+# --- 🔥 HELPER: VISUAL TAP (WITH LOGS) 🔥 ---
 async def visual_tap(page, element, desc):
     try:
         await element.scroll_into_view_if_needed()
@@ -130,13 +129,13 @@ async def visual_tap(page, element, desc):
             x = box['x'] + box['width'] / 2
             y = box['y'] + box['height'] / 2
             
-            # log_msg(f"👆 Tapping {desc}...")
+            log_msg(f"👆 Tapping {desc}...") # 🔥 UNCOMMENTED THIS
             await page.touchscreen.tap(x, y)
             return True
     except: pass
     return False
 
-# --- 🔥 HELPER: SECURE STEP (THE LOGIC) 🔥 ---
+# --- 🔥 HELPER: SECURE STEP 🔥 ---
 async def secure_step(page, current_finder, next_finder_check, step_name, pre_action=None):
     max_retries = 5
     for i in range(max_retries):
@@ -160,6 +159,7 @@ async def secure_step(page, current_finder, next_finder_check, step_name, pre_ac
                 await visual_tap(page, btn.first, step_name)
                 await asyncio.sleep(3) # Wait for reaction
             else:
+                if i == 0: log_msg(f"⏳ Finding {step_name}...")
                 await asyncio.sleep(2)
         except Exception as e: pass
     
@@ -196,9 +196,9 @@ async def run_single_session(phone_number):
             }
             if proxy_config: launch_args["proxy"] = proxy_config
 
+            log_msg("🚀 Launching Browser...")
             browser = await p.chromium.launch(**launch_args)
             
-            # Mobile Emulation is KEY for visual_tap
             context = await browser.new_context(
                 viewport={'width': 412, 'height': 950},
                 user_agent="Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.6167.101 Mobile Safari/537.36",
@@ -208,6 +208,7 @@ async def run_single_session(phone_number):
 
             # 1. Load
             try:
+                log_msg("🌐 Loading Website...")
                 await page.goto(BASE_URL, timeout=60000)
             except:
                 log_msg(f"⚠️ Load Failed: {phone_number}")
@@ -239,7 +240,6 @@ async def run_single_session(phone_number):
             if not success: await browser.close(); return
 
             # 4. DOB -> Phone
-            # Scroll handled by visual_tap internally using scroll_into_view
             success = await secure_step(
                 page,
                 lambda: page.get_by_text("Next", exact=True),
@@ -282,6 +282,7 @@ async def run_single_session(phone_number):
             
             # Search & Select
             search = page.get_by_placeholder("Search", exact=False).first
+            log_msg("⌨️ Typing Country...")
             await visual_tap(page, search, "Search")
             await page.keyboard.type(target_country, delay=50)
             await asyncio.sleep(2) 
@@ -300,7 +301,7 @@ async def run_single_session(phone_number):
             if await inp.count() == 0: inp = page.locator("input").first
             
             if await inp.count() > 0:
-                # log_msg("🔢 Inputting Number...")
+                log_msg("⌨️ Typing Phone...")
                 await visual_tap(page, inp, "Input")
                 await page.keyboard.type(phone_number, delay=20)
                 await page.touchscreen.tap(350, 100) # Hide KB
@@ -313,7 +314,8 @@ async def run_single_session(phone_number):
                 err_popup = page.get_by_text("An unexpected problem", exact=False)
                 if await err_popup.count() > 0:
                     log_msg("⛔ Not Supported")
-                    await page.screenshot(path=f"{CAPTURE_DIR}/Error_Popup_{phone_number}.jpg")
+                    ts = time.strftime("%H%M%S")
+                    await page.screenshot(path=f"{CAPTURE_DIR}/Error_Popup_{phone_number}_{ts}.jpg")
                     await browser.close(); return
 
                 # Captcha
@@ -333,15 +335,18 @@ async def run_single_session(phone_number):
                         await asyncio.sleep(5)
                         if await page.get_by_text("swap 2 tiles", exact=False).count() == 0:
                             log_msg("✅ Success: Verified!")
-                            await page.screenshot(path=f"{CAPTURE_DIR}/Success_{phone_number}.jpg")
+                            ts = time.strftime("%H%M%S")
+                            await page.screenshot(path=f"{CAPTURE_DIR}/Success_{phone_number}_{ts}.jpg")
                         else:
                             log_msg("❌ Failed: Captcha Stuck")
-                            await page.screenshot(path=f"{CAPTURE_DIR}/Stuck_{phone_number}.jpg")
+                            ts = time.strftime("%H%M%S")
+                            await page.screenshot(path=f"{CAPTURE_DIR}/Stuck_{phone_number}_{ts}.jpg")
                     else:
                         log_msg("⚠️ Solver Error")
                 else:
                     log_msg("✅ Success: Direct")
-                    await page.screenshot(path=f"{CAPTURE_DIR}/Success_{phone_number}.jpg")
+                    ts = time.strftime("%H%M%S")
+                    await page.screenshot(path=f"{CAPTURE_DIR}/Success_{phone_number}_{ts}.jpg")
             
             await browser.close()
 

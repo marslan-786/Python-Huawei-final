@@ -18,6 +18,7 @@ app = FastAPI()
 
 # --- CONFIGURATION ---
 CAPTURE_DIR = "./captures"
+VIDEO_PATH = f"{CAPTURE_DIR}/proof.mp4"
 NUMBERS_FILE = "numbers.txt"
 PROXY_FILE = "proxies.txt"
 BASE_URL = "https://id5.cloud.huawei.com"
@@ -153,20 +154,15 @@ async def show_red_dot(page, x, y):
 
 # 🔥 TARGETED TAP (Text Y + Fixed X) 🔥
 async def visual_tap(page, element, desc, mode="center"):
-    """
-    mode='center': Click center of element.
-    mode='right_edge': Find Y of element, but click X=380 (Right Edge).
-    """
     try:
         await element.scroll_into_view_if_needed()
         box = await element.bounding_box()
         
         if box:
             if mode == "right_edge":
-                # 🔥 THE FIX: Use text Y, but force X to right side
                 x = 380 
                 y = box['y'] + box['height'] / 2
-                desc += " (Right Side)"
+                desc += " (Right Edge)"
             else:
                 x = box['x'] + box['width'] / 2
                 y = box['y'] + box['height'] / 2
@@ -257,24 +253,25 @@ async def run_single_session(phone_number, country_name, proxy_config):
                 await page.goto(BASE_URL, timeout=60000)
                 await capture_step(page, "01_Loaded", wait_time=2)
 
-                # 1. REGISTER (Strict Button Match)
+                # 1. REGISTER (Pure Text Match - No Button Tag)
+                # This finds the exact word "Register" anywhere on page
                 if not await secure_step(
                     page, 
-                    lambda: page.locator("button").filter(has_text="Register").or_(page.get_by_role("button", name="Register")), 
+                    lambda: page.get_by_text("Register", exact=True), 
                     lambda: page.get_by_text("Agree", exact=True).or_(page.get_by_text("Next", exact=True)), 
                     "Register"
                 ): await browser.close(); return "retry"
 
-                # 2. AGREE (Strict Button Match)
+                # 2. AGREE (Target Blue Button specifically)
                 cb_text = page.get_by_text("stay informed", exact=False).first
                 async def click_checkbox():
                     if await cb_text.count() > 0: await visual_tap(page, cb_text, "Checkbox")
 
                 if not await secure_step(
                     page,
-                    # Uses button role to avoid text paragraph
+                    # Uses button role ONLY here to avoid the text paragraph
                     lambda: page.get_by_role("button", name="Agree").or_(page.get_by_role("button", name="Next")),
-                    lambda: page.get_by_text("Next", exact=True), # Target DOB Next
+                    lambda: page.get_by_text("Next", exact=True), 
                     "Agree_Btn",
                     pre_action=click_checkbox
                 ): await browser.close(); return "retry"
@@ -284,7 +281,7 @@ async def run_single_session(phone_number, country_name, proxy_config):
                 await page.mouse.move(200, 800, steps=10); await page.mouse.up()
                 if not await secure_step(
                     page,
-                    lambda: page.get_by_role("button", name="Next"),
+                    lambda: page.get_by_text("Next", exact=True),
                     lambda: page.get_by_text("Use phone number", exact=False),
                     "DOB_Next"
                 ): await browser.close(); return "retry"
@@ -297,26 +294,21 @@ async def run_single_session(phone_number, country_name, proxy_config):
                     "UsePhone"
                 ): await browser.close(); return "retry"
 
-                # 5. COUNTRY SWITCH (Logic Update: Find text, Click Right Edge)
+                # 5. COUNTRY SWITCH
                 log_msg(f"🌍 Selecting {country_name}...")
                 list_opened = False
                 
-                # Check if list already open
                 if await page.get_by_placeholder("Search", exact=False).count() > 0:
                     list_opened = True
                 else:
-                    # Find the text "Country/Region" and click to its RIGHT
+                    # Find text "Country/Region" and click RIGHT EDGE
                     lbl = page.get_by_text("Country/Region").first
                     if await lbl.count() > 0:
-                        # 🔥 KEY FIX: mode='right_edge'
                         await visual_tap(page, lbl, "CountryRow", mode="right_edge")
                         await asyncio.sleep(2)
-                        
-                        # Verify
-                        if await page.get_by_placeholder("Search", exact=False).count() > 0:
-                            list_opened = True
+                        if await page.get_by_placeholder("Search", exact=False).count() > 0: list_opened = True
                     else:
-                        log_msg("⚠️ Label not found, blind tap...")
+                        # Fallback blind tap
                         await page.touchscreen.tap(380, 200)
                         await asyncio.sleep(2)
                         if await page.get_by_placeholder("Search", exact=False).count() > 0: list_opened = True

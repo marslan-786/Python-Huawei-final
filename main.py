@@ -120,7 +120,7 @@ async def stop_bot():
     log_msg("🛑 Stopping...")
     return {"status": "stopping"}
 
-# --- 🔥 HELPER: VISUAL TAP (WITH LOGS) 🔥 ---
+# --- 🔥 HELPER: VISUAL TAP 🔥 ---
 async def visual_tap(page, element, desc):
     try:
         await element.scroll_into_view_if_needed()
@@ -129,7 +129,7 @@ async def visual_tap(page, element, desc):
             x = box['x'] + box['width'] / 2
             y = box['y'] + box['height'] / 2
             
-            log_msg(f"👆 Tapping {desc}...") # 🔥 UNCOMMENTED THIS
+            log_msg(f"👆 Tapping {desc}...")
             await page.touchscreen.tap(x, y)
             return True
     except: pass
@@ -141,12 +141,10 @@ async def secure_step(page, current_finder, next_finder_check, step_name, pre_ac
     for i in range(max_retries):
         if not BOT_RUNNING: return False
         
-        # 1. Check if already passed
         try:
             if await next_finder_check().count() > 0: return True
         except: pass
         
-        # 2. Try Action
         try:
             btn = current_finder()
             if await btn.count() > 0:
@@ -157,21 +155,22 @@ async def secure_step(page, current_finder, next_finder_check, step_name, pre_ac
                     await asyncio.sleep(0.5)
                 
                 await visual_tap(page, btn.first, step_name)
-                await asyncio.sleep(3) # Wait for reaction
+                await asyncio.sleep(3) 
             else:
                 if i == 0: log_msg(f"⏳ Finding {step_name}...")
                 await asyncio.sleep(2)
         except Exception as e: pass
     
-    # Final Fail
     log_msg(f"❌ Stuck at {step_name}")
     ts = time.strftime("%H%M%S")
     try: await page.screenshot(path=f"{CAPTURE_DIR}/Stuck_{step_name}_{ts}.jpg")
     except: pass
     return False
 
-# --- CORE LOOP ---
+# --- CORE LOOP WITH DEBUG ---
 async def master_loop():
+    log_msg("🟢 DEBUG: Worker Loop Started") # Debug Log 1
+    
     while BOT_RUNNING:
         try:
             phone_number = NUMBER_QUEUE.get_nowait()
@@ -189,6 +188,7 @@ async def run_single_session(phone_number):
     proxy_config = get_proxy()
     
     try:
+        log_msg("🚀 DEBUG: Launching Browser...") # Debug Log 2
         async with async_playwright() as p:
             launch_args = {
                 "headless": True,
@@ -196,8 +196,8 @@ async def run_single_session(phone_number):
             }
             if proxy_config: launch_args["proxy"] = proxy_config
 
-            log_msg("🚀 Launching Browser...")
             browser = await p.chromium.launch(**launch_args)
+            log_msg("✅ DEBUG: Browser Opened!") # Debug Log 3
             
             context = await browser.new_context(
                 viewport={'width': 412, 'height': 950},
@@ -261,7 +261,6 @@ async def run_single_session(phone_number):
             log_msg("👆 Selecting Country...")
             list_opened = False
             for i in range(4):
-                # Check for Search Input
                 search_box = page.get_by_placeholder("Search", exact=False)
                 if await search_box.count() > 0:
                     list_opened = True; break
@@ -272,7 +271,6 @@ async def run_single_session(phone_number):
                 if await arrow.count() > 0: 
                     await visual_tap(page, arrow, "Arrow")
                 elif await label.count() > 0: 
-                    # Fallback Coords
                     await page.touchscreen.tap(370, 150)
                 await asyncio.sleep(2) 
             
@@ -309,7 +307,6 @@ async def run_single_session(phone_number):
                 get_code_btn = page.locator(".get-code-btn").or_(page.get_by_text("Get code")).first
                 await visual_tap(page, get_code_btn, "GET CODE")
                 
-                # Check Error
                 await asyncio.sleep(2)
                 err_popup = page.get_by_text("An unexpected problem", exact=False)
                 if await err_popup.count() > 0:

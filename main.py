@@ -70,14 +70,24 @@ async def read_index(): return FileResponse('index.html')
 
 @app.get("/status")
 async def get_status():
+    # 🔥 FIXED: Safe File Reading (No More 500 Errors)
     images = []
     try:
         if os.path.exists(CAPTURE_DIR):
-            files = sorted([f for f in os.listdir(CAPTURE_DIR) if f.endswith(".jpg")], 
-                           key=lambda x: os.path.getmtime(os.path.join(CAPTURE_DIR, x)), 
-                           reverse=True)[:5]
-            images = [f"/captures/{f}" for f in files]
-    except: pass
+            all_files = os.listdir(CAPTURE_DIR)
+            valid_files = []
+            for f in all_files:
+                if f.endswith(".jpg"):
+                    full_path = os.path.join(CAPTURE_DIR, f)
+                    if os.path.exists(full_path): # Double check existence
+                        valid_files.append((f, os.path.getmtime(full_path)))
+            
+            # Sort by new
+            valid_files.sort(key=lambda x: x[1], reverse=True)
+            images = [f"/captures/{f[0]}" for f in valid_files[:5]]
+    except Exception: 
+        pass # Ignore errors silently
+        
     return JSONResponse({"logs": logs, "images": images, "running": BOT_RUNNING, "current_country": SETTINGS["country"]})
 
 @app.post("/update_settings")
@@ -108,7 +118,7 @@ async def start_bot(bt: BackgroundTasks):
             while not NUMBER_QUEUE.empty(): NUMBER_QUEUE.get_nowait()
             for n in nums: NUMBER_QUEUE.put_nowait(n)
             
-            log_msg(f"🚀 Loaded {len(nums)} Numbers. Starting Sequential...")
+            log_msg(f"🚀 Loaded {len(nums)} Numbers. Starting...")
             bt.add_task(master_loop)
         else: return {"status": "error"}
     return {"status": "started"}
@@ -141,10 +151,12 @@ async def secure_step(page, current_finder, next_finder_check, step_name, pre_ac
     for i in range(max_retries):
         if not BOT_RUNNING: return False
         
+        # 1. Check Success
         try:
             if await next_finder_check().count() > 0: return True
         except: pass
         
+        # 2. Try Action
         try:
             btn = current_finder()
             if await btn.count() > 0:
@@ -161,15 +173,18 @@ async def secure_step(page, current_finder, next_finder_check, step_name, pre_ac
                 await asyncio.sleep(2)
         except Exception as e: pass
     
+    # Final Fail
     log_msg(f"❌ Stuck at {step_name}")
     ts = time.strftime("%H%M%S")
     try: await page.screenshot(path=f"{CAPTURE_DIR}/Stuck_{step_name}_{ts}.jpg")
     except: pass
     return False
 
-# --- CORE LOOP WITH DEBUG ---
+# --- CORE LOOP ---
 async def master_loop():
-    log_msg("🟢 DEBUG: Worker Loop Started") # Debug Log 1
+    global BOT_RUNNING  # 🔥 THIS WAS THE MISSING LINE FIXING THE CRASH 🔥
+    
+    log_msg("🟢 DEBUG: Worker Loop Started") 
     
     while BOT_RUNNING:
         try:
@@ -188,7 +203,7 @@ async def run_single_session(phone_number):
     proxy_config = get_proxy()
     
     try:
-        log_msg("🚀 DEBUG: Launching Browser...") # Debug Log 2
+        log_msg("🚀 DEBUG: Launching Browser...")
         async with async_playwright() as p:
             launch_args = {
                 "headless": True,
@@ -197,7 +212,7 @@ async def run_single_session(phone_number):
             if proxy_config: launch_args["proxy"] = proxy_config
 
             browser = await p.chromium.launch(**launch_args)
-            log_msg("✅ DEBUG: Browser Opened!") # Debug Log 3
+            log_msg("✅ DEBUG: Browser Opened!")
             
             context = await browser.new_context(
                 viewport={'width': 412, 'height': 950},
@@ -261,6 +276,7 @@ async def run_single_session(phone_number):
             log_msg("👆 Selecting Country...")
             list_opened = False
             for i in range(4):
+                # Check for Search Input
                 search_box = page.get_by_placeholder("Search", exact=False)
                 if await search_box.count() > 0:
                     list_opened = True; break
@@ -271,6 +287,7 @@ async def run_single_session(phone_number):
                 if await arrow.count() > 0: 
                     await visual_tap(page, arrow, "Arrow")
                 elif await label.count() > 0: 
+                    # Fallback Coords
                     await page.touchscreen.tap(370, 150)
                 await asyncio.sleep(2) 
             
@@ -307,6 +324,7 @@ async def run_single_session(phone_number):
                 get_code_btn = page.locator(".get-code-btn").or_(page.get_by_text("Get code")).first
                 await visual_tap(page, get_code_btn, "GET CODE")
                 
+                # Check Error
                 await asyncio.sleep(2)
                 err_popup = page.get_by_text("An unexpected problem", exact=False)
                 if await err_popup.count() > 0:

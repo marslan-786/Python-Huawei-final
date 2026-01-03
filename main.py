@@ -188,53 +188,34 @@ async def visual_tap(page, element, desc):
     except: pass
     return False
 
-# 🔥 SECURE STEP: The "Check Back" Logic 🔥
+# 🔥 SECURE STEP LOGIC 🔥
 async def secure_step(page, current_finder, next_finder_check, step_name, pre_action=None):
-    """
-    1. Click Current Button.
-    2. Wait.
-    3. Check if Next Element exists.
-    4. If NOT: Check if Current Button is STILL there.
-    5. If YES: Click Current Button AGAIN (Retry).
-    """
     max_retries = 5
     for i in range(max_retries):
         if not BOT_RUNNING: return False
         
-        # 1. First, check if we are ALREADY on the next step (maybe previous click worked)
+        # 1. Check if Next Step Loaded
         try:
             if await next_finder_check().count() > 0:
-                # log_msg(f"✅ {step_name} successful (Next detected).")
                 return True
         except: pass
 
-        # 2. If next not found, look for CURRENT button
+        # 2. Click Current Button if exists
         try:
             btn = current_finder()
             if await btn.count() > 0:
                 log_msg(f"♻️ Attempt {i+1}: Clicking {step_name}...")
-                
-                # Execute Pre-Action (like clicking checkbox text)
-                if pre_action:
-                    await pre_action()
-                    await asyncio.sleep(0.5)
-
+                if pre_action: await pre_action()
                 await visual_tap(page, btn.first, step_name)
-                
-                # Wait for load (3 seconds)
                 await asyncio.sleep(3)
-                
-                # Capture attempt
                 await capture_step(page, f"{step_name}_Attempt_{i+1}", wait_time=0)
             else:
-                # Current button is GONE, but Next button NOT found?
-                # Maybe page is loading slowly... wait a bit more
-                log_msg(f"⏳ {step_name} clicked, waiting for navigation...")
+                log_msg(f"⏳ {step_name} clicked, waiting...")
                 await asyncio.sleep(2)
         except Exception as e:
-            log_msg(f"⚠️ Error in {step_name}: {e}")
+            log_msg(f"⚠️ Error: {e}")
     
-    log_msg(f"❌ Failed to pass {step_name} after {max_retries} attempts.")
+    log_msg(f"❌ Failed to pass {step_name}.")
     return False
 
 # --- CORE LOGIC LOOP ---
@@ -265,7 +246,7 @@ async def master_loop():
                 success = True
                 break 
             else:
-                log_msg("⚠️ Attempt Failed. Retrying same number...")
+                log_msg("⚠️ Attempt Failed. Retrying...")
                 await asyncio.sleep(2)
         
         if success:
@@ -296,10 +277,9 @@ async def run_single_session(phone_number, country_name, proxy_config):
             try:
                 if not BOT_RUNNING: return "stopped"
                 await page.goto(BASE_URL, timeout=60000)
-                await capture_step(page, "01_HomePage", wait_time=3)
+                await capture_step(page, "01_HomePage", wait_time=2)
 
                 # --- STEP 1: REGISTER -> AGREE ---
-                # Check Next: Agree Button
                 success = await secure_step(
                     page, 
                     lambda: page.get_by_text("Register", exact=True).or_(page.get_by_role("button", name="Register")),
@@ -308,28 +288,41 @@ async def run_single_session(phone_number, country_name, proxy_config):
                 )
                 if not success: await browser.close(); return "retry"
 
-                # --- STEP 2: AGREE -> DOB ---
-                # Pre-Action: Click Checkbox Text
-                async def click_checkbox():
-                    txt = page.get_by_text("stay informed", exact=False).first
-                    if await txt.count() > 0: await visual_tap(page, txt, "Checkbox")
+                # --- STEP 2: AGREE PAGE (WITH DUAL CAPTURE) ---
+                log_msg("⏳ Waiting for Agree Page Content...")
+                
+                # 1. Find the Text (Don't Click Yet)
+                cb_text = page.get_by_text("stay informed", exact=False).first
+                try:
+                    await cb_text.wait_for(timeout=10000) # Wait up to 10s for page load
+                except:
+                    log_msg("⚠️ Checkbox text not found, trying Button directly...")
 
-                # Check Next: DOB Next Button
+                # 📸 CAPTURE 1: BEFORE CLICK (Unticked)
+                await capture_step(page, "03_01_Agree_Unticked", wait_time=0.5)
+
+                # 2. Click Checkbox Logic
+                async def click_checkbox():
+                    if await cb_text.count() > 0:
+                        await visual_tap(page, cb_text, "CheckboxText")
+                        # 📸 CAPTURE 2: AFTER CLICK (Ticked)
+                        # We capture INSIDE here to make sure we captured the action
+                        await capture_step(page, "03_02_Agree_Ticked", wait_time=1)
+
+                # 3. Click Agree (Secure Step)
                 success = await secure_step(
                     page,
                     lambda: page.get_by_text("Agree", exact=True).or_(page.get_by_text("Next", exact=True)),
-                    lambda: page.get_by_text("Next", exact=True), # This is DOB 'Next'
-                    "Agree",
+                    lambda: page.get_by_text("Next", exact=True), # Target: DOB Next
+                    "Agree_Btn",
                     pre_action=click_checkbox
                 )
                 if not success: await browser.close(); return "retry"
 
                 # --- STEP 3: DOB -> PHONE OPTION ---
-                # Scroll Logic for DOB
                 await page.mouse.move(200, 500); await page.mouse.down()
                 await page.mouse.move(200, 800, steps=10); await page.mouse.up()
                 
-                # Check Next: 'Use phone number'
                 success = await secure_step(
                     page,
                     lambda: page.get_by_text("Next", exact=True),
@@ -339,7 +332,6 @@ async def run_single_session(phone_number, country_name, proxy_config):
                 if not success: await browser.close(); return "retry"
 
                 # --- STEP 4: USE PHONE NUMBER -> COUNTRY SELECTOR ---
-                # Check Next: Country/Region
                 success = await secure_step(
                     page,
                     lambda: page.get_by_text("Use phone number", exact=False),
@@ -348,23 +340,21 @@ async def run_single_session(phone_number, country_name, proxy_config):
                 )
                 if not success: await browser.close(); return "retry"
 
-                # --- STEP 5: COUNTRY SWITCH (Complex) ---
+                # --- STEP 5: COUNTRY SWITCH ---
                 log_msg(f"🌍 Switching to {country_name}...")
                 
-                # Click Country Selector
                 success = await secure_step(
                     page,
                     lambda: page.get_by_text("Hong Kong").or_(page.get_by_text("Country/Region")),
-                    lambda: page.locator("input"), # Next is search bar
+                    lambda: page.locator("input"),
                     "CountrySelector"
                 )
                 if not success: await browser.close(); return "retry"
                 
-                # Type Country
                 search = page.locator("input").first
                 await visual_tap(page, search, "Search")
                 await page.keyboard.type(country_name, delay=50)
-                await capture_step(page, "07_Typed", wait_time=3) 
+                await capture_step(page, "07_Typed", wait_time=2) 
                 
                 matches = page.get_by_text(country_name, exact=False)
                 if await matches.count() > 1:
@@ -385,15 +375,13 @@ async def run_single_session(phone_number, country_name, proxy_config):
                     for c in phone_number:
                         if not BOT_RUNNING: return "stopped"
                         await page.keyboard.type(c); await asyncio.sleep(0.05)
-                    await page.touchscreen.tap(350, 100) # Hide KB
+                    await page.touchscreen.tap(350, 100)
                     await capture_step(page, "09_NumTyped", wait_time=0.5)
                     
-                    # Get Code
-                    # Use secure step here too? Usually not needed as page doesn't reload, but safe
                     get_code_btn = page.locator(".get-code-btn").or_(page.get_by_text("Get code")).first
                     if await get_code_btn.count() > 0:
                         await visual_tap(page, get_code_btn, "GET CODE")
-                        await capture_step(page, "10_GetCodeClicked", wait_time=3)
+                        await capture_step(page, "10_GetCodeClicked", wait_time=2)
                         
                         log_msg("⏳ Waiting for Captcha...")
                         start_time = time.time()

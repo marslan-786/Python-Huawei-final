@@ -38,7 +38,6 @@ except ImportError:
 SETTINGS = {
     "country": "Russia",
     "proxy_manual": "",
-    "use_proxy_file": False
 }
 
 # --- GLOBAL STATE ---
@@ -54,7 +53,7 @@ def log_msg(message):
 
 # --- PROXY PARSER ---
 def parse_proxy_string(proxy_str):
-    if not proxy_str: return None
+    if not proxy_str or len(proxy_str) < 5: return None
     p = proxy_str.strip()
     if "://" not in p: p = f"http://{p}"
     try:
@@ -68,18 +67,24 @@ def parse_proxy_string(proxy_str):
         log_msg(f"⚠️ Proxy Parse Error: {e}")
         return None
 
-# --- PROXY HELPER ---
-def get_current_proxy():
-    if SETTINGS["proxy_manual"] and len(SETTINGS["proxy_manual"].strip()) > 3:
-        return parse_proxy_string(SETTINGS["proxy_manual"])
+# --- PROXY HELPER (STRICT & ROTATING) ---
+def get_next_proxy():
+    # 1. Manual Proxy (Priority)
+    if SETTINGS["proxy_manual"] and len(SETTINGS["proxy_manual"].strip()) > 5:
+        return parse_proxy_string(SETTINGS["proxy_manual"]), "Manual"
+    
+    # 2. Proxy List (Rotation)
     if os.path.exists(PROXY_FILE):
         try:
             with open(PROXY_FILE, 'r') as f:
                 lines = [l.strip() for l in f.readlines() if l.strip()]
             if lines:
-                return parse_proxy_string(random.choice(lines))
+                selected = random.choice(lines)
+                return parse_proxy_string(selected), "Rotated"
         except: pass
-    return None
+    
+    # 3. Direct (Only if no proxy settings exist)
+    return None, "Direct"
 
 def get_next_number():
     if os.path.exists(NUMBERS_FILE):
@@ -87,6 +92,7 @@ def get_next_number():
             lines = f.read().splitlines()
         for num in lines:
             if num.strip(): return num.strip()
+    # Random fallback if file empty
     prefix = "9"
     rest = ''.join([str(random.randint(0, 9)) for _ in range(9)])
     return f"{prefix}{rest}"
@@ -99,17 +105,13 @@ async def read_index(): return FileResponse('index.html')
 @app.get("/status")
 async def get_status():
     files = sorted(glob.glob(f'{CAPTURE_DIR}/*.jpg'), key=os.path.getmtime, reverse=True)
-    images = [f"/captures/{os.path.basename(f)}" for f in files]
-    p_log = "NO"
-    curr_prox = get_current_proxy()
-    if curr_prox: p_log = curr_prox['server']
+    images = [f"/captures/{os.path.basename(f)}" for f in files[:10]] # Limit to last 10 images to save bandwidth
     
     return JSONResponse({
         "logs": logs[:50], 
         "images": images,
         "running": BOT_RUNNING,
-        "current_country": SETTINGS["country"],
-        "current_proxy": p_log
+        "current_country": SETTINGS["country"]
     })
 
 @app.post("/update_settings")
@@ -122,13 +124,13 @@ async def update_settings(country: str = Form(...), manual_proxy: Optional[str] 
 @app.post("/upload_proxies")
 async def upload_proxies(file: UploadFile = File(...)):
     with open(PROXY_FILE, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
-    log_msg(f"📂 Proxy List Uploaded: {file.filename}")
+    log_msg(f"📂 Proxy List Uploaded")
     return {"status": "saved"}
 
 @app.post("/upload_numbers")
 async def upload_numbers(file: UploadFile = File(...)):
     with open(NUMBERS_FILE, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
-    log_msg(f"📂 Numbers File Uploaded: {file.filename}")
+    log_msg(f"📂 Numbers File Uploaded")
     return {"status": "saved"}
 
 @app.post("/start")
@@ -146,19 +148,7 @@ async def stop_bot():
     log_msg("🛑 STOP COMMAND RECEIVED.")
     return {"status": "stopping"}
 
-@app.post("/generate_video")
-async def trigger_video():
-    files = sorted(glob.glob(f'{CAPTURE_DIR}/*.jpg'))
-    if not files: return {"status": "error", "error": "No images"}
-    try:
-        with imageio.get_writer(VIDEO_PATH, fps=2, format='FFMPEG', quality=8) as writer:
-            for filename in files:
-                try: writer.append_data(imageio.imread(filename))
-                except: continue
-        return {"status": "done"}
-    except Exception as e: return {"status": "error", "error": str(e)}
-
-# --- HELPER FUNCTIONS ---
+# --- VISUAL HELPERS ---
 
 async def capture_step(page, step_name, wait_time=0):
     if not BOT_RUNNING: return
@@ -197,7 +187,7 @@ async def visual_tap(page, element, desc):
             y = box['y'] + box['height'] / 2
             
             await show_red_dot(page, x, y)
-            log_msg(f"👆 Clicking {desc}...")
+            log_msg(f"👆 Tapping {desc}...")
             await page.touchscreen.tap(x, y)
             return True
     except: pass
@@ -213,49 +203,48 @@ async def secure_step(page, current_finder, next_finder_check, step_name, pre_ac
         try:
             btn = current_finder()
             if await btn.count() > 0:
-                log_msg(f"♻️ Attempt {i+1}: Clicking {step_name}...")
+                if i > 0: log_msg(f"♻️ Retry {i+1}: {step_name}...")
+                
                 if pre_action: await pre_action()
                 await visual_tap(page, btn.first, step_name)
                 await asyncio.sleep(0.5) 
-                await capture_step(page, f"{step_name}_ClickVis_{i+1}", wait_time=0)
+                await capture_step(page, f"{step_name}_Click_{i+1}", wait_time=0)
                 await asyncio.sleep(3) 
             else:
-                log_msg(f"⏳ {step_name} clicked, waiting...")
+                log_msg(f"⏳ Finding {step_name}...")
                 await asyncio.sleep(2)
         except Exception as e: log_msg(f"⚠️ Error: {e}")
+    
     log_msg(f"❌ Failed to pass {step_name}.")
     return False
 
-# --- CORE LOGIC LOOP ---
+# --- MAIN LOOP ---
 async def master_loop():
+    global BOT_RUNNING
+    
     while BOT_RUNNING:
         current_number = get_next_number()
         target_country = SETTINGS["country"]
-        proxy_cfg = get_current_proxy()
-        p_log = "NO"
-        if proxy_cfg: p_log = f"{proxy_cfg['server']}"
-        log_msg(f"🎬 NEW NUMBER: {current_number} | Country: {target_country} | Proxy: {p_log}")
+        
+        # 🔥 GET NEW PROXY PER NUMBER 🔥
+        proxy_cfg, proxy_type = get_next_proxy()
+        
+        # Display safe proxy string
+        p_display = proxy_cfg['server'] if proxy_cfg else "Direct"
+        log_msg(f"🔵 Processing: {current_number} | Proxy: {p_display}")
         
         success = False
-        for attempt in range(1, 4):
-            if not BOT_RUNNING: break
-            log_msg(f"🔹 Attempt {attempt}/3 for {current_number}")
-            try:
-                result = await run_single_session(current_number, target_country, proxy_cfg)
-            except Exception as e:
-                log_msg(f"🔥 Crash Error: {e}"); result = "retry"
-            
-            # 🔥 NEW SKIP LOGIC 🔥
-            if result == "skipped":
-                log_msg("⏭️ Fatal Error on Number. Skipping to next...")
-                break # Break retry loop, move to next number immediately
-            
-            if result == "success": success = True; break 
-            else: log_msg("⚠️ Attempt Failed. Retrying..."); await asyncio.sleep(2)
+        # Single Attempt per number (Keep it simple)
+        try:
+            result = await run_single_session(current_number, target_country, proxy_cfg)
+            if result == "success": success = True
+        except Exception as e:
+            log_msg(f"🔥 Crash Error: {e}")
         
-        if success: log_msg("🎉 Verified! Moving to next number...")
-        else: log_msg("❌ Failed or Skipped. Checking next.")
-        await asyncio.sleep(1)
+        if success: log_msg("🎉 Verified! Moving to next...")
+        else: log_msg("❌ Failed. Checking next number...")
+        
+        await asyncio.sleep(2)
 
 async def run_single_session(phone_number, country_name, proxy_config):
     try:
@@ -266,7 +255,9 @@ async def run_single_session(phone_number, country_name, proxy_config):
             }
             if proxy_config: launch_args["proxy"] = proxy_config
 
+            log_msg("🚀 Launching Browser...")
             browser = await p.chromium.launch(**launch_args)
+            
             pixel_5 = p.devices['Pixel 5'].copy()
             pixel_5['user_agent'] = "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.6167.101 Mobile Safari/537.36"
             pixel_5['viewport'] = {'width': 412, 'height': 950} 
@@ -274,11 +265,11 @@ async def run_single_session(phone_number, country_name, proxy_config):
             context = await browser.new_context(**pixel_5, locale="en-US")
             page = await context.new_page()
 
-            log_msg("🚀 Navigating...")
+            log_msg("🌐 Loading Website...")
             try:
                 if not BOT_RUNNING: return "stopped"
                 await page.goto(BASE_URL, timeout=60000)
-                await capture_step(page, "01_HomePage", wait_time=2)
+                await capture_step(page, "01_Loaded", wait_time=2)
 
                 # STEP 1: REGISTER -> AGREE
                 success = await secure_step(
@@ -290,27 +281,26 @@ async def run_single_session(phone_number, country_name, proxy_config):
                 if not success: await browser.close(); return "retry"
 
                 # STEP 2: AGREE PAGE
-                log_msg("⏳ Waiting for Agree Page...")
                 cb_text = page.get_by_text("stay informed", exact=False).first
                 try: await cb_text.wait_for(timeout=10000)
-                except: log_msg("⚠️ Checkbox text not found, trying Button directly...")
-                await capture_step(page, "03_01_Agree_Unticked", wait_time=0.5)
+                except: pass
+                await capture_step(page, "02_AgreePage", wait_time=0.5)
 
                 async def click_checkbox():
                     if await cb_text.count() > 0:
-                        await visual_tap(page, cb_text, "CheckboxText")
-                        await capture_step(page, "03_02_Agree_Ticked", wait_time=0.5)
+                        await visual_tap(page, cb_text, "Checkbox")
+                        await capture_step(page, "02_Checkbox", wait_time=0.5)
 
                 success = await secure_step(
                     page,
                     lambda: page.get_by_text("Agree", exact=True).or_(page.get_by_text("Next", exact=True)),
-                    lambda: page.get_by_text("Next", exact=True),
+                    lambda: page.get_by_text("Next", exact=True), # Target: DOB Next
                     "Agree_Btn",
                     pre_action=click_checkbox
                 )
                 if not success: await browser.close(); return "retry"
 
-                # STEP 3: DOB -> PHONE OPTION
+                # STEP 3: DOB -> PHONE
                 await page.mouse.move(200, 500); await page.mouse.down()
                 await page.mouse.move(200, 800, steps=10); await page.mouse.up()
                 success = await secure_step(
@@ -321,7 +311,7 @@ async def run_single_session(phone_number, country_name, proxy_config):
                 )
                 if not success: await browser.close(); return "retry"
 
-                # STEP 4: USE PHONE NUMBER -> COUNTRY SELECTOR
+                # STEP 4: PHONE -> COUNTRY
                 success = await secure_step(
                     page,
                     lambda: page.get_by_text("Use phone number", exact=False),
@@ -330,121 +320,94 @@ async def run_single_session(phone_number, country_name, proxy_config):
                 )
                 if not success: await browser.close(); return "retry"
 
-                # --- TARGET ARROW ONLY ---
-                log_msg(f"🌍 Switching to {country_name}...")
+                # STEP 5: COUNTRY SWITCH
+                log_msg(f"🌍 Selecting: {country_name}...")
                 list_opened = False
                 for i in range(4):
-                    # Check for Search Input
                     search_box = page.get_by_placeholder("Search", exact=False)
                     if await search_box.count() > 0:
-                        log_msg("✅ TRUE Search Bar Detected!")
                         list_opened = True; break
                     
                     arrow = page.locator(".hwid-list-item-arrow").first
                     label = page.get_by_text("Country/Region").first
                     
                     if await arrow.count() > 0: 
-                        log_msg("🎯 Found Arrow Icon! Tapping...")
-                        await visual_tap(page, arrow, "ArrowIcon")
+                        await visual_tap(page, arrow, "Arrow")
                     elif await label.count() > 0: 
-                        log_msg("⚠️ Arrow missing. Using Coords...")
-                        box = await label.bounding_box()
-                        if box:
-                            x_target = 370 
-                            y_target = box['y'] + (box['height'] / 2)
-                            await show_red_dot(page, x_target, y_target)
-                            await asyncio.sleep(0.5)
-                            await page.touchscreen.tap(x_target, y_target)
-                            await capture_step(page, f"05_Arrow_CoordClick_{i+1}", wait_time=0)
+                        log_msg("⚠️ Using Coords...")
+                        await page.touchscreen.tap(370, 150)
                     else:
-                        log_msg("❌ Country/Region Row NOT FOUND.")
+                        log_msg("❌ Country Row Not Found")
                     await asyncio.sleep(2) 
                 
                 if not list_opened:
-                    log_msg("❌ Failed to open Country List.")
+                    log_msg("❌ Failed to open List.")
                     await browser.close(); return "retry"
                 
-                # If List Opened -> Search & Select
-                await capture_step(page, "06_ListOpened", wait_time=0.5)
+                await capture_step(page, "03_ListOpen", wait_time=0.5)
                 search = page.get_by_placeholder("Search", exact=False).first
                 await visual_tap(page, search, "Search")
                 await page.keyboard.type(country_name, delay=50)
-                await capture_step(page, "07_Typed", wait_time=2) 
+                await capture_step(page, "04_Typed", wait_time=2) 
                 
                 matches = page.get_by_text(country_name, exact=False)
                 count = await matches.count()
-                if count > 1: await visual_tap(page, matches.nth(1), f"CountryResult_{country_name}")
-                elif count == 1: await visual_tap(page, matches.first, f"CountryResult_{country_name}")
+                if count > 1: await visual_tap(page, matches.nth(1), f"Result_{country_name}")
+                elif count == 1: await visual_tap(page, matches.first, f"Result_{country_name}")
                 else: log_msg(f"❌ {country_name} not found"); await browser.close(); return "retry"
-                await capture_step(page, "08_Selected", wait_time=1)
+                await capture_step(page, "05_Selected", wait_time=1)
 
                 # STEP 6: INPUT NUMBER
                 inp = page.locator("input[type='tel']").first
                 if await inp.count() == 0: inp = page.locator("input").first
                 
                 if await inp.count() > 0:
-                    log_msg("🔢 Inputting Phone Number...")
+                    log_msg("🔢 Inputting Number...")
                     await visual_tap(page, inp, "Input")
-                    for c in phone_number:
-                        if not BOT_RUNNING: return "stopped"
-                        await page.keyboard.type(c); await asyncio.sleep(0.05)
+                    await page.keyboard.type(phone_number, delay=20)
                     await page.touchscreen.tap(350, 100)
-                    await capture_step(page, "09_NumTyped", wait_time=0.5)
+                    await capture_step(page, "06_NumTyped", wait_time=0.5)
                     
                     get_code_btn = page.locator(".get-code-btn").or_(page.get_by_text("Get code")).first
                     if await get_code_btn.count() > 0:
                         await visual_tap(page, get_code_btn, "GET CODE")
-                        await capture_step(page, "10_GetCodeClicked", wait_time=2)
+                        await capture_step(page, "07_GetCode", wait_time=2)
                         
-                        # 🔥 NEW: CHECK FOR ERROR POPUP (SKIP LOGIC) 🔥
+                        # Error Check
                         err_popup = page.get_by_text("An unexpected problem", exact=False)
                         if await err_popup.count() > 0:
-                            log_msg("⛔ FATAL: 'Unexpected Problem' detected!")
-                            await capture_step(page, "Fatal_Error_Popup", wait_time=0)
+                            log_msg("⛔ Not Supported")
+                            await capture_step(page, "Error_Popup", wait_time=0)
                             await browser.close()
-                            return "skipped" # <--- THIS SKIPS THE NUMBER
+                            return "skipped"
 
-                        log_msg("⏳ Waiting for Captcha...")
+                        log_msg("⏳ Checking Captcha...")
                         start_time = time.time()
                         
                         while BOT_RUNNING:
                             if time.time() - start_time > 60:
-                                log_msg("⏰ Captcha Timeout"); await browser.close(); return "retry"
+                                log_msg("⏰ Timeout"); await browser.close(); return "retry"
 
-                            captcha_frame = None
-                            for frame in page.frames:
-                                try:
-                                    if await frame.get_by_text("swap 2 tiles", exact=False).count() > 0:
-                                        captcha_frame = frame; break
-                                except: pass
-                            
-                            if captcha_frame:
-                                log_msg("🧩 CAPTCHA DETECTED. Waiting 5s for full load...")
-                                # 🔥 WAITING 5 SECONDS BEFORE SOLVING 🔥
+                            if await page.get_by_text("swap 2 tiles", exact=False).count() > 0:
+                                log_msg("🧩 CAPTCHA FOUND!")
                                 await asyncio.sleep(5) 
-                                await capture_step(page, "11_CaptchaFound", wait_time=0)
+                                await capture_step(page, "08_Captcha", wait_time=0)
                                 
                                 session_id = f"sess_{int(time.time())}"
                                 ai_success = await solve_captcha(page, session_id, logger=log_msg)
                                 
                                 if not ai_success: await browser.close(); return "retry"
                                 
-                                await capture_step(page, "12_Solving", wait_time=5)
-                                is_still_there = False
-                                for frame in page.frames:
-                                    try:
-                                        if await frame.get_by_text("swap 2 tiles", exact=False).count() > 0:
-                                            is_still_there = True; break
-                                    except: pass
+                                await capture_step(page, "09_Solving", wait_time=5)
                                 
-                                if not is_still_there:
+                                if await page.get_by_text("swap 2 tiles", exact=False).count() == 0:
                                     log_msg("✅ SUCCESS!")
-                                    await capture_step(page, "13_Success", wait_time=1)
+                                    await capture_step(page, "10_Success", wait_time=1)
                                     await browser.close(); return "success"
                                 else:
-                                    log_msg("🔁 Verification Failed. Trying again..."); await asyncio.sleep(2); continue
-                        else:
-                            await asyncio.sleep(1)
+                                    log_msg("🔁 Failed. Retrying..."); await asyncio.sleep(2); continue
+                            else:
+                                await asyncio.sleep(1)
                 
                 await browser.close(); return "retry"
 

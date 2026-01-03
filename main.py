@@ -15,8 +15,7 @@ CAPTURE_DIR = "./captures"
 NUMBERS_FILE = "numbers.txt"
 PROXY_FILE = "proxies.txt"
 BASE_URL = "https://id5.cloud.huawei.com"
-MAX_WORKERS = 10 
-STEP_TIMEOUT = 60000  # 60 Seconds Safety
+MAX_WORKERS = 1  # 🔥 ONE BY ONE PROCESS
 
 app = FastAPI()
 
@@ -26,6 +25,7 @@ app.mount("/captures", StaticFiles(directory=CAPTURE_DIR), name="captures")
 try:
     from captcha_solver import solve_captcha
 except ImportError:
+    print("❌ ERROR: captcha_solver.py not found!")
     async def solve_captcha(page, session_id): return False
 
 SETTINGS = {
@@ -70,23 +70,15 @@ async def read_index(): return FileResponse('index.html')
 
 @app.get("/status")
 async def get_status():
-    # 🔥 FIXED: Safe File Listing
     images = []
     try:
-        files = [f for f in os.listdir(CAPTURE_DIR) if f.endswith(".jpg")]
-        # Only take files that actually exist (Race condition fix)
-        valid_files = []
-        for f in files:
-            full_path = os.path.join(CAPTURE_DIR, f)
-            if os.path.exists(full_path):
-                valid_files.append((f, os.path.getmtime(full_path)))
-        
-        # Sort by time desc
-        valid_files.sort(key=lambda x: x[1], reverse=True)
-        images = [f"/captures/{f[0]}" for f in valid_files[:5]]
-    except Exception:
-        pass # Ignore file errors to prevent crash
-
+        # Safe File Reading to prevent Server Error
+        if os.path.exists(CAPTURE_DIR):
+            files = sorted([f for f in os.listdir(CAPTURE_DIR) if f.endswith(".jpg")], 
+                           key=lambda x: os.path.getmtime(os.path.join(CAPTURE_DIR, x)), 
+                           reverse=True)[:5]
+            images = [f"/captures/{f}" for f in files]
+    except Exception: pass
     return JSONResponse({"logs": logs, "images": images, "running": BOT_RUNNING, "current_country": SETTINGS["country"]})
 
 @app.post("/update_settings")
@@ -117,7 +109,7 @@ async def start_bot(bt: BackgroundTasks):
             while not NUMBER_QUEUE.empty(): NUMBER_QUEUE.get_nowait()
             for n in nums: NUMBER_QUEUE.put_nowait(n)
             
-            log_msg(f"🚀 Loaded {len(nums)} Numbers.")
+            log_msg(f"🚀 Loaded {len(nums)} Numbers. Starting Sequential...")
             bt.add_task(single_worker_loop)
         else: return {"status": "error"}
     return {"status": "started"}
@@ -129,26 +121,53 @@ async def stop_bot():
     log_msg("🛑 Stopping...")
     return {"status": "stopping"}
 
-# --- SAFE ACTION WRAPPER ---
-async def do_step(page, locator_func, action_desc, action_type="click", input_text=""):
-    if not BOT_RUNNING: return False
-    log_msg(f"{action_desc}...")
-    
-    try:
-        element = locator_func()
-        await element.first.wait_for(state="visible", timeout=STEP_TIMEOUT)
+# --- 🔥 SUPER ZIDDI TRANSITION LOGIC 🔥 ---
+async def force_transition(page, current_finder, next_finder, step_name, pre_action=None):
+    """
+    Checks if Next Page exists.
+    If NOT -> Checks if Current Page exists.
+    If YES -> Clicks Current Button AGAIN.
+    Repeats 5 times.
+    """
+    for attempt in range(1, 6): # 5 Tries
+        if not BOT_RUNNING: return False
         
-        if action_type == "click": await element.first.click()
-        elif action_type == "type": await element.first.fill(input_text)
-        elif action_type == "tap": await element.first.tap()
-            
-        return True
-    except Exception:
-        log_msg(f"❌ Failed: {action_desc}")
-        ts = time.strftime("%H%M%S")
-        try: await page.screenshot(path=f"{CAPTURE_DIR}/Error_{ts}.jpg")
+        # 1. Check Success (Next Page)
+        try:
+            if await next_finder().count() > 0:
+                # log_msg(f"✅ {step_name} Passed.")
+                return True
         except: pass
-        return False
+
+        # 2. Check Previous (Are we stuck?)
+        try:
+            btn = current_finder()
+            if await btn.count() > 0:
+                log_msg(f"♻️ {step_name}: Not moved yet. Retrying Click ({attempt}/5)...")
+                
+                # Perform Pre-Action (like Tick Box)
+                if pre_action: 
+                    await pre_action()
+                    await asyncio.sleep(0.5)
+
+                # Click Button
+                await btn.first.scroll_into_view_if_needed()
+                await btn.first.click()
+                await asyncio.sleep(3) # Wait for load
+            else:
+                # Neither Next nor Previous found? Wait...
+                log_msg(f"⏳ {step_name}: Loading...")
+                await asyncio.sleep(2)
+        except Exception as e:
+            pass
+    
+    # Final Failure Check
+    if await next_finder().count() > 0: return True
+    
+    log_msg(f"❌ Stuck at {step_name} after 5 tries.")
+    ts = time.strftime("%H%M%S")
+    await page.screenshot(path=f"{CAPTURE_DIR}/Stuck_{step_name}_{ts}.jpg")
+    return False
 
 # --- WORKER ---
 async def single_worker_loop():
@@ -186,76 +205,98 @@ async def process_number(phone_number):
             # 1. LOAD
             log_msg("🌐 Loading Website...")
             try:
-                await page.goto(BASE_URL, timeout=STEP_TIMEOUT, wait_until='domcontentloaded')
+                await page.goto(BASE_URL, timeout=60000, wait_until='domcontentloaded')
             except:
                 log_msg(f"❌ Load Failed")
                 await browser.close(); return
 
-            # 2. REGISTER
-            if not await do_step(page, lambda: page.get_by_text("Register", exact=True).or_(page.get_by_role("button", name="Register")), "👆 Tapping Register"):
-                await browser.close(); return
+            # 2. REGISTER -> AGREE
+            if not await force_transition(
+                page,
+                lambda: page.get_by_text("Register", exact=True).or_(page.get_by_role("button", name="Register")),
+                lambda: page.get_by_text("Agree", exact=True).or_(page.get_by_text("Next", exact=True)),
+                "Register"
+            ): await browser.close(); return
 
-            # 3. AGREE
-            try:
+            # 3. AGREE -> DOB (WITH CHECKBOX FIX)
+            async def tick_box():
                 cb = page.get_by_text("stay informed", exact=False).first
-                if await cb.count() > 0: await cb.tap()
-            except: pass
+                if await cb.count() > 0: await cb.click()
 
-            if not await do_step(page, lambda: page.get_by_text("Agree", exact=True).or_(page.get_by_text("Next", exact=True)), "👆 Tapping Agree"):
-                await browser.close(); return
+            if not await force_transition(
+                page,
+                lambda: page.get_by_text("Agree", exact=True).or_(page.get_by_text("Next", exact=True)),
+                lambda: page.get_by_text("Next", exact=True), # DOB Next button
+                "Agree_Terms",
+                pre_action=tick_box
+            ): await browser.close(); return
 
-            # 4. DOB
-            if not await do_step(page, lambda: page.get_by_text("Next", exact=True), "👆 Tapping DOB Next"):
-                await browser.close(); return
+            # 4. DOB -> PHONE OPTION
+            # No Scroll needed if we use locator click directly, but force_transition handles it
+            if not await force_transition(
+                page,
+                lambda: page.get_by_text("Next", exact=True),
+                lambda: page.get_by_text("Use phone number", exact=False),
+                "DOB_Next"
+            ): await browser.close(); return
 
-            # 5. PHONE OPTION
-            if not await do_step(page, lambda: page.get_by_text("Use phone number", exact=False), "👆 Tapping Use Phone"):
-                await browser.close(); return
+            # 5. PHONE OPTION -> COUNTRY
+            if not await force_transition(
+                page,
+                lambda: page.get_by_text("Use phone number", exact=False),
+                lambda: page.locator(".hwid-list-item-arrow").or_(page.get_by_text("Country/Region")),
+                "Use_Phone_Btn"
+            ): await browser.close(); return
 
-            # 6. COUNTRY SWITCH (Robust)
+            # 6. COUNTRY SWITCH (Explicit)
             log_msg("👆 Opening Country List...")
-            list_opened = False
+            list_open = await force_transition(
+                page,
+                lambda: page.locator(".hwid-list-item-arrow").or_(page.get_by_text("Country/Region")),
+                lambda: page.get_by_placeholder("Search", exact=False),
+                "Open_Country_List"
+            )
             
-            # Try Arrow Class
-            arrow = page.locator(".hwid-list-item-arrow").first
-            if await arrow.count() > 0:
-                await arrow.tap()
-                list_opened = True
-            else:
-                # Try Label Coord Click
-                label = page.get_by_text("Country/Region").first
-                if await label.count() > 0:
-                    box = await label.bounding_box()
-                    if box:
-                        await page.touchscreen.tap(370, box['y'] + 20)
-                        list_opened = True
-            
-            if list_opened:
-                # Wait for Search
-                if not await do_step(page, lambda: page.get_by_placeholder("Search", exact=False), "⌨️ Typing Country", "type", target_country):
-                    await browser.close(); return
-                
+            if list_open:
+                search = page.get_by_placeholder("Search", exact=False).first
+                await search.click()
+                await page.keyboard.type(target_country, delay=50)
                 await asyncio.sleep(2)
                 
-                # Select Country
                 matches = page.get_by_text(target_country, exact=False)
                 if await matches.count() > 1: await matches.nth(1).click()
                 else: await matches.first.click()
                 await asyncio.sleep(2)
+            else:
+                # If list failed to open after 5 retries, we might be stuck
+                await browser.close(); return
 
             # 7. INPUT
-            if not await do_step(page, lambda: page.locator("input[type='tel']"), "⌨️ Typing Phone", "type", phone_number):
+            inp = page.locator("input[type='tel']").first
+            try: await inp.wait_for(state="visible", timeout=10000)
+            except: 
+                log_msg("❌ Input field not found")
                 await browser.close(); return
-            
+
+            await inp.click()
+            await page.keyboard.type(phone_number, delay=20)
             await page.touchscreen.tap(350, 100) # Hide KB
 
-            if not await do_step(page, lambda: page.locator(".get-code-btn").or_(page.get_by_text("Get code")), "👆 Tapping Get Code"):
-                await browser.close(); return
+            # Get Code
+            if not await force_transition(
+                page,
+                lambda: page.locator(".get-code-btn").or_(page.get_by_text("Get code")),
+                lambda: page.get_by_text("swap 2 tiles", exact=False).or_(page.get_by_text("An unexpected problem", exact=False)), # Next is either Captcha or Error
+                "Get_Code_Btn"
+            ): 
+                # Sometimes no transition happens if silent fail, check captcha anyway
+                pass
 
             # 8. ERROR CHECK
             await asyncio.sleep(2)
             if await page.get_by_text("An unexpected problem", exact=False).count() > 0:
                 log_msg(f"⛔ Error: Not Supported")
+                await page.screenshot(path=f"{CAPTURE_DIR}/Error_Supported_{phone_number}.jpg")
                 await browser.close(); return
 
             # 9. CAPTCHA
@@ -278,10 +319,11 @@ async def process_number(phone_number):
                         await page.screenshot(path=f"{CAPTURE_DIR}/Success_{phone_number}.jpg")
                     else:
                         log_msg(f"❌ Failed: Captcha Stuck")
-                        await page.screenshot(path=f"{CAPTURE_DIR}/Stuck_{phone_number}.jpg")
+                        await page.screenshot(path=f"{CAPTURE_DIR}/Stuck_Captcha_{phone_number}.jpg")
                 else:
                     log_msg(f"⚠️ Solver Failed")
             else:
+                # No captcha? Check if button is gone (Success)
                 if await page.locator(".get-code-btn").or_(page.get_by_text("Get code")).is_visible():
                      log_msg(f"⚠️ Timeout: No reaction")
                 else:
@@ -290,6 +332,8 @@ async def process_number(phone_number):
 
         except Exception as e:
             log_msg(f"🔥 Crash: {e}")
+            try: await page.screenshot(path=f"{CAPTURE_DIR}/Crash_{phone_number}.jpg")
+            except: pass
         
         finally:
             if browser: await browser.close()

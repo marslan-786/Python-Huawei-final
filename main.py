@@ -168,6 +168,7 @@ async def capture_step(page, step_name, wait_time=0):
     try: await page.screenshot(path=filename)
     except: pass
 
+# 🔥 VISUAL TAP WITH RED DOT (AUTO-REMOVE) 🔥
 async def visual_tap(page, element, desc):
     try:
         await element.scroll_into_view_if_needed()
@@ -175,13 +176,26 @@ async def visual_tap(page, element, desc):
         if box:
             x = box['x'] + box['width'] / 2
             y = box['y'] + box['height'] / 2
+            
+            # Create Red Dot
             await page.evaluate(f"""
                 var dot = document.createElement('div');
-                dot.style.position = 'absolute'; left = '{x}px'; top = '{y}px';
-                dot.style.width = '15px'; dot.style.height = '15px'; dot.style.background = 'rgba(255,0,0,0.6)';
-                dot.style.borderRadius = '50%'; dot.style.zIndex = '999999'; dot.style.pointerEvents='none';
+                dot.style.position = 'absolute'; 
+                dot.style.left = '{x-10}px'; 
+                dot.style.top = '{y-10}px';
+                dot.style.width = '20px'; 
+                dot.style.height = '20px'; 
+                dot.style.background = 'rgba(255, 0, 0, 0.7)'; // Transparent Red
+                dot.style.borderRadius = '50%'; 
+                dot.style.zIndex = '2147483647'; // Max Z-Index
+                dot.style.pointerEvents = 'none'; // CLICK THROUGH (Glass like)
+                dot.style.border = '2px solid white'; // Visibility ring
                 document.body.appendChild(dot);
+                
+                // Remove after 500ms (Auto Vanish)
+                setTimeout(() => {{ dot.remove(); }}, 500);
             """)
+            
             log_msg(f"👆 Clicking {desc}...")
             await page.touchscreen.tap(x, y)
             return True
@@ -193,21 +207,31 @@ async def secure_step(page, current_finder, next_finder_check, step_name, pre_ac
     max_retries = 5
     for i in range(max_retries):
         if not BOT_RUNNING: return False
+        
+        # 1. Check if Next Step Loaded
         try:
             if await next_finder_check().count() > 0: return True
         except: pass
+
+        # 2. Click Current Button if exists
         try:
             btn = current_finder()
             if await btn.count() > 0:
                 log_msg(f"♻️ Attempt {i+1}: Clicking {step_name}...")
                 if pre_action: await pre_action()
                 await visual_tap(page, btn.first, step_name)
-                await asyncio.sleep(3)
-                await capture_step(page, f"{step_name}_Attempt_{i+1}", wait_time=0)
+                
+                # Capture THE CLICK visual immediately
+                await asyncio.sleep(0.2) 
+                await capture_step(page, f"{step_name}_ClickVis_{i+1}", wait_time=0)
+                
+                await asyncio.sleep(3) # Wait for page load
             else:
                 log_msg(f"⏳ {step_name} clicked, waiting...")
                 await asyncio.sleep(2)
-        except Exception as e: log_msg(f"⚠️ Error: {e}")
+        except Exception as e:
+            log_msg(f"⚠️ Error: {e}")
+    
     log_msg(f"❌ Failed to pass {step_name}.")
     return False
 
@@ -268,18 +292,19 @@ async def run_single_session(phone_number, country_name, proxy_config):
                 )
                 if not success: await browser.close(); return "retry"
 
-                # STEP 2: AGREE PAGE
+                # STEP 2: AGREE PAGE (WITH CHECKBOX FIX)
                 log_msg("⏳ Waiting for Agree Page...")
                 cb_text = page.get_by_text("stay informed", exact=False).first
                 try: await cb_text.wait_for(timeout=10000)
                 except: log_msg("⚠️ Checkbox text not found, trying Button directly...")
 
+                # 📸 Capture Unticked
                 await capture_step(page, "03_01_Agree_Unticked", wait_time=0.5)
 
                 async def click_checkbox():
                     if await cb_text.count() > 0:
                         await visual_tap(page, cb_text, "CheckboxText")
-                        await capture_step(page, "03_02_Agree_Ticked", wait_time=1)
+                        await capture_step(page, "03_02_Agree_Ticked", wait_time=0.5)
 
                 success = await secure_step(
                     page,
@@ -302,7 +327,7 @@ async def run_single_session(phone_number, country_name, proxy_config):
                 if not success: await browser.close(); return "retry"
 
                 # STEP 4: USE PHONE NUMBER -> COUNTRY SELECTOR
-                # Notice: We changed detector here. We don't verify against 'Country/Region' clickability, just visibility
+                # Notice: We changed detector here to allow visibility check only
                 success = await secure_step(
                     page,
                     lambda: page.get_by_text("Use phone number", exact=False),
@@ -316,32 +341,28 @@ async def run_single_session(phone_number, country_name, proxy_config):
                 
                 list_opened = False
                 for i in range(4):
-                    # Check if Search Input exists (Means list is open)
                     if await page.locator("input").count() > 0:
                         list_opened = True; break
                     
                     # 🎯 TARGET: Find the Arrow
-                    # Strategy: Find 'Country/Region' text, then find the arrow inside that list item container
-                    arrow = page.locator(".hwid-list-item-arrow").first # Best specific selector
+                    arrow = page.locator(".hwid-list-item-arrow").first
+                    general_label = page.get_by_text("Country/Region").first
                     
-                    # Fallback: Click on right side of screen aligned with 'Country/Region'
-                    if await arrow.count() > 0:
-                        log_msg("🎯 Found Arrow! Clicking...")
-                        await visual_tap(page, arrow, "ArrowClick")
+                    target = None
+                    if await arrow.count() > 0: 
+                        log_msg("🎯 Found Arrow Icon! Clicking...")
+                        target = arrow
+                    elif await general_label.count() > 0: 
+                        log_msg("⚠️ Arrow not found, clicking Label coordinates...")
+                        target = general_label
+
+                    if target:
+                        await visual_tap(page, target, "CountrySelector")
+                        await asyncio.sleep(0.5) # Wait for Red Dot to show in video
+                        await capture_step(page, f"05_ArrowClick_Try_{i+1}", wait_time=0)
+                        await asyncio.sleep(2) 
                     else:
-                        log_msg("⚠️ Arrow not found via class. Trying coordinate tap...")
-                        # Fallback Coordinate Click (Right side of Country/Region)
-                        label = page.get_by_text("Country/Region").first
-                        if await label.count() > 0:
-                            box = await label.bounding_box()
-                            if box:
-                                # Click far right on the same Y-axis
-                                x_right = 350 # Right side of mobile screen
-                                y_center = box['y'] + (box['height'] / 2)
-                                await page.touchscreen.tap(x_right, y_center)
-                                log_msg("👆 Tapped Right Side Coordinates")
-                    
-                    await asyncio.sleep(2) 
+                        log_msg("⚠️ Selector missing, retrying...")
                 
                 if not list_opened:
                     log_msg("❌ Failed to open Country List.")

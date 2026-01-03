@@ -15,7 +15,7 @@ CAPTURE_DIR = "./captures"
 NUMBERS_FILE = "numbers.txt"
 PROXY_FILE = "proxies.txt"
 BASE_URL = "https://id5.cloud.huawei.com"
-MAX_WORKERS = 10  # 🔥 صرف 10 براؤزر کی اجازت
+MAX_WORKERS = 10 
 
 app = FastAPI()
 
@@ -38,7 +38,7 @@ SETTINGS = {
 # --- GLOBAL STATE ---
 BOT_RUNNING = False
 logs = []
-active_tasks = 0 # ٹریکنگ کے لیے
+active_tasks = 0
 
 def log_msg(message):
     entry = f"[{time.strftime('%H:%M:%S')}] {message}"
@@ -116,7 +116,6 @@ async def start_bot(bt: BackgroundTasks):
                 BOT_RUNNING = False
                 return {"status": "error"}
             
-            # Start the Manager in Background
             bt.add_task(execution_manager, nums)
         else:
             log_msg("⚠️ numbers.txt not found!")
@@ -130,41 +129,38 @@ async def stop_bot():
     log_msg("🛑 Stopping... (Active browsers will close)")
     return {"status": "stopping"}
 
-# --- THE MANAGER (SEMAPHORE LOGIC) ---
+# --- MANAGER ---
 async def execution_manager(numbers):
-    # 🔥 یہ سب سے اہم لائن ہے۔ یہ صرف 10 ٹوکن جاری کرے گا۔
     sem = asyncio.Semaphore(MAX_WORKERS)
-    
     log_msg(f"🚀 Started! Total: {len(numbers)} | Limit: {MAX_WORKERS} Browsers")
     
     tasks = []
-    for number in numbers:
+    for i, number in enumerate(numbers):
         if not BOT_RUNNING: break
         
-        # یہ لائن تب تک رکی رہے گی جب تک کوئی پرانا براؤزر بند نہ ہو جائے
         await sem.acquire()
         
-        # جیسے ہی ٹوکن ملا، نیا ٹاسک شروع
-        task = asyncio.create_task(browser_worker(sem, number))
-        tasks.append(task)
+        # Stagger Start: Add random delay so proxies don't block
+        delay = random.uniform(1, 3) if i < 10 else 0.5
         
-        # تھوڑا سا وقفہ تاکہ ایک ساتھ 10 نہ کھلیں (سسٹم سیفٹی)
-        await asyncio.sleep(0.5)
+        task = asyncio.create_task(browser_worker(sem, number, delay))
+        tasks.append(task)
 
-    # سب کے ختم ہونے کا انتظار
     await asyncio.gather(*tasks)
     if BOT_RUNNING: log_msg("✅✅ PROJECT COMPLETE: ALL NUMBERS DONE ✅✅")
 
-# --- THE WORKER (Opens 1 Browser, Does Work, Closes) ---
-async def browser_worker(sem, phone_number):
+# --- WORKER ---
+async def browser_worker(sem, phone_number, start_delay):
     global active_tasks
     active_tasks += 1
     
+    # Initial Wait to prevent CPU Spike
+    await asyncio.sleep(start_delay)
+    
     proxy_cfg = get_proxy()
     target_country = SETTINGS["country"]
-    
-    # 🟢 START LOG (Browser Opening)
     p_info = "Proxy" if proxy_cfg else "Direct"
+    
     log_msg(f"🔵 Processing: {phone_number} ({p_info})")
 
     async with async_playwright() as p:
@@ -176,7 +172,6 @@ async def browser_worker(sem, phone_number):
             }
             if proxy_cfg: launch_args["proxy"] = proxy_cfg
 
-            # 🔥 NEW BROWSER PER NUMBER
             browser = await p.chromium.launch(**launch_args)
             context = await browser.new_context(
                 viewport={'width': 412, 'height': 950},
@@ -184,73 +179,104 @@ async def browser_worker(sem, phone_number):
             )
             page = await context.new_page()
 
-            # --- NAVIGATION & LOGIC ---
-            if not BOT_RUNNING: raise Exception("Stopped")
-            
+            # --- SMART NAVIGATION ---
             try:
-                await page.goto(BASE_URL, timeout=40000)
+                await page.goto(BASE_URL, timeout=60000, wait_until="domcontentloaded")
             except:
-                log_msg(f"❌ Error: {phone_number} - Network/Proxy Failed")
-                raise Exception("Network Error")
+                log_msg(f"⚠️ {phone_number}: Load Retry 1...")
+                try: await page.reload(timeout=60000, wait_until="domcontentloaded")
+                except: raise Exception("Network Failed")
 
-            # 1. Register & Agree
+            # --- 1. REGISTER (Smart Wait) ---
+            # Loop looking for Register button for 10 seconds
+            reg_found = False
+            for _ in range(10):
+                if not BOT_RUNNING: break
+                try:
+                    reg = page.get_by_text("Register", exact=True).or_(page.get_by_role("button", name="Register")).first
+                    if await reg.count() > 0:
+                        await reg.click()
+                        reg_found = True; break
+                except: pass
+                await asyncio.sleep(1)
+            
+            if not reg_found: raise Exception("Register Btn Missing")
+
+            # --- 2. AGREE ---
+            await asyncio.sleep(2) # Allow page load
             try:
-                reg = page.get_by_text("Register", exact=True).or_(page.get_by_role("button", name="Register")).first
-                await reg.click(timeout=8000)
-                
                 cb = page.get_by_text("stay informed", exact=False).first
                 if await cb.count() > 0: await cb.click()
                 
                 agree = page.get_by_text("Agree", exact=True).or_(page.get_by_text("Next", exact=True)).first
-                await agree.click()
-            except:
-                log_msg(f"⚠️ Error: {phone_number} - Page Load Failed")
-                raise Exception("Load Failed")
+                if await agree.count() > 0: await agree.click()
+                else: raise Exception("Agree Btn Missing")
+            except: raise Exception("Agree Phase Failed")
 
-            # 2. DOB -> Phone
+            # --- 3. DOB -> PHONE ---
+            await asyncio.sleep(2)
             try:
                 await page.mouse.move(200, 500); await page.mouse.down()
-                await page.mouse.move(200, 800, steps=2); await page.mouse.up() 
-                await page.get_by_text("Next", exact=True).first.click()
-                await page.get_by_text("Use phone number", exact=False).first.click()
-            except:
-                raise Exception("Nav Error")
+                await page.mouse.move(200, 800, steps=5); await page.mouse.up() 
+                
+                dob = page.get_by_text("Next", exact=True).first
+                await dob.click()
+                await asyncio.sleep(1)
+                
+                ph_opt = page.get_by_text("Use phone number", exact=False).first
+                await ph_opt.click()
+            except: raise Exception("Nav Error (DOB/Phone)")
 
-            # 3. Country Switch
+            # --- 4. COUNTRY SWITCH (The "Ziddi" Arrow Logic) ---
+            await asyncio.sleep(2)
             try:
                 list_opened = False
+                # Try finding arrow class first
                 arrow = page.locator(".hwid-list-item-arrow").first
-                if await arrow.count() > 0: await arrow.click(); list_opened = True
-                else: await page.touchscreen.tap(370, 150); list_opened = True
                 
-                if list_opened:
-                    search = page.get_by_placeholder("Search", exact=False).first
-                    await search.click(timeout=5000)
-                    await page.keyboard.type(target_country, delay=10)
-                    await asyncio.sleep(1)
+                # Try clicking arrow/label
+                if await arrow.count() > 0: await arrow.click()
+                else: await page.touchscreen.tap(370, 150) # Coords
+                
+                # Check for Search Input
+                await asyncio.sleep(1.5)
+                search = page.get_by_placeholder("Search", exact=False).first
+                if await search.count() > 0:
+                    list_opened = True
+                    await search.click()
+                    await page.keyboard.type(target_country, delay=20)
+                    await asyncio.sleep(2)
+                    
                     matches = page.get_by_text(target_country, exact=False)
                     if await matches.count() > 1: await matches.nth(1).click()
                     else: await matches.first.click()
+                else:
+                    # If failed, assume default country or skip check to prevent crash
+                    pass 
             except: pass
 
-            # 4. Input & Process
+            # --- 5. INPUT NUMBER ---
+            await asyncio.sleep(2)
             inp = page.locator("input[type='tel']").first
+            if await inp.count() == 0: raise Exception("Input Missing")
+            
             await inp.click()
             await page.keyboard.type(phone_number, delay=10)
-            await page.touchscreen.tap(350, 100) 
+            await page.touchscreen.tap(350, 100)
             
-            await page.locator(".get-code-btn").or_(page.get_by_text("Get code")).first.click()
+            get_code = page.locator(".get-code-btn").or_(page.get_by_text("Get code")).first
+            await get_code.click()
             
-            # Error Check
-            await asyncio.sleep(1.5)
+            # Error Popup Check
+            await asyncio.sleep(2)
             if await page.get_by_text("An unexpected problem", exact=False).count() > 0:
                 log_msg(f"⛔ Error: {phone_number} Not Supported")
                 raise Exception("Not Supported")
 
-            # Captcha Logic
+            # --- 6. CAPTCHA ---
             start_time = time.time()
             captcha_found = False
-            while time.time() - start_time < 8:
+            while time.time() - start_time < 10:
                 if await page.get_by_text("swap 2 tiles", exact=False).count() > 0:
                     captcha_found = True; break
                 await asyncio.sleep(1)
@@ -275,11 +301,13 @@ async def browser_worker(sem, phone_number):
                 else:
                     log_msg(f"✅ Success: {phone_number} Sent (Direct)")
 
-        except Exception:
-            pass # Logs handled inside specific blocks
+        except Exception as e:
+            msg = str(e)
+            if "Target closed" in msg: msg = "Browser Closed Unexpectedly"
+            if "Timeout" in msg: msg = "Timeout / Slow Net"
+            log_msg(f"⚠️ Error: {phone_number} - {msg}")
         
         finally:
             if browser: await browser.close()
-            # 🔥 سب سے اہم: ٹوکن واپس کرنا تاکہ اگلا نمبر شروع ہو سکے
             sem.release()
             active_tasks -= 1

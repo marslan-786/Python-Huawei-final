@@ -48,23 +48,38 @@ def log_msg(message):
     logs.insert(0, entry)
     if len(logs) > 500: logs.pop()
 
-# --- PROXY LOGIC (STRICT) ---
+# --- 🔥 SMART PROXY PARSER (FIXED) 🔥 ---
 def parse_proxy_string(proxy_str):
     if not proxy_str or len(proxy_str) < 5: return None
     p = proxy_str.strip()
+    
+    # CASE 1: IP:PORT:USER:PASS (Your specific format)
+    # Example: 142.111.48.253:7030:tclohvzf:4evsgt1ovb3k
+    if p.count(":") == 3 and "://" not in p:
+        parts = p.split(":")
+        return {
+            "server": f"http://{parts[0]}:{parts[1]}",
+            "username": parts[2],
+            "password": parts[3]
+        }
+    
+    # CASE 2: IP:PORT (Simple)
+    if p.count(":") == 1 and "://" not in p:
+        return {"server": f"http://{p}"}
+
+    # CASE 3: Standard URL (http://user:pass@ip:port)
     if "://" not in p: p = f"http://{p}"
     try:
         parsed = urlparse(p)
-        return {"server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}", "username": parsed.username, "password": parsed.password} if parsed.username else {"server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"}
+        cfg = {"server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"}
+        if parsed.username: cfg["username"] = parsed.username
+        if parsed.password: cfg["password"] = parsed.password
+        return cfg
     except Exception as e:
         log_msg(f"⚠️ Proxy Parse Error: {e}")
         return None
 
 def get_strict_proxy():
-    """
-    Returns a proxy config OR raises an error.
-    NO DIRECT INTERNET FALLBACK.
-    """
     # 1. Manual Proxy
     if SETTINGS["proxy_manual"] and len(SETTINGS["proxy_manual"].strip()) > 5:
         return parse_proxy_string(SETTINGS["proxy_manual"])
@@ -75,10 +90,11 @@ def get_strict_proxy():
             with open(PROXY_FILE, 'r') as f:
                 lines = [l.strip() for l in f.readlines() if l.strip()]
             if lines:
-                return parse_proxy_string(random.choice(lines))
+                raw_proxy = random.choice(lines)
+                return parse_proxy_string(raw_proxy)
         except: pass
     
-    return None # Return None if NO proxy found
+    return None
 
 def get_next_number():
     if os.path.exists(NUMBERS_FILE):
@@ -97,7 +113,6 @@ async def get_status():
     files = sorted(glob.glob(f'{CAPTURE_DIR}/*.jpg'), key=os.path.getmtime, reverse=True)
     images = [f"/captures/{os.path.basename(f)}" for f in files[:10]]
     
-    # Check proxy just for display
     prox = get_strict_proxy()
     p_disp = prox['server'] if prox else "❌ NO PROXY SET"
     
@@ -161,24 +176,16 @@ async def show_red_dot(page, x, y):
 
 # --- 🔥 THE 5 CLICK STRATEGIES 🔥 ---
 async def execute_click_strategy(page, element, attempt_num, desc):
-    """
-    Polymorphic Click Logic: Changes attack method based on attempt number.
-    """
     try:
-        # Ensure visible first
         await element.scroll_into_view_if_needed()
         box = await element.bounding_box()
         if not box: return False
         
-        # Center Coords
         cx = box['x'] + box['width'] / 2
         cy = box['y'] + box['height'] / 2
-        
-        # Right Side Coords (For Rows)
         rx = box['x'] + box['width'] - 40
         ry = cy
 
-        # STRATEGY SWITCHER
         if attempt_num == 1:
             log_msg(f"🔹 Strategy 1 (Standard): {desc}")
             await element.click(force=True, timeout=2000)
@@ -200,24 +207,18 @@ async def execute_click_strategy(page, element, attempt_num, desc):
         elif attempt_num == 5:
             log_msg(f"🔹 Strategy 5 (CDP Raw Hammer): {desc}")
             await show_red_dot(page, cx, cy)
-            # Raw Input Protocol
             client = await page.context.new_cdp_session(page)
             await client.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [{"x": cx, "y": cy}]})
             await asyncio.sleep(0.15)
             await client.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
             
         return True
-    except Exception as e:
-        # log_msg(f"⚠️ Strategy {attempt_num} Failed: {e}")
-        pass
+    except Exception: pass
     return False
 
 async def secure_step(page, current_finder, next_finder_check, step_name, pre_action=None):
-    # Loop 1 to 5
     for i in range(1, 6):
         if not BOT_RUNNING: return False
-        
-        # Check Success First
         try:
             if await next_finder_check().count() > 0: return True
         except: pass
@@ -226,12 +227,8 @@ async def secure_step(page, current_finder, next_finder_check, step_name, pre_ac
             btn = current_finder()
             if await btn.count() > 0:
                 if i > 1: log_msg(f"♻️ {step_name}: Trying Method {i}/5...")
-                
                 if pre_action: await pre_action()
-                
-                # 🔥 CALL POLYMORPHIC CLICK 🔥
                 await execute_click_strategy(page, btn.first, i, step_name)
-                
                 await asyncio.sleep(0.5) 
                 await capture_step(page, f"{step_name}_Try{i}", wait_time=0)
                 await asyncio.sleep(3) 
@@ -248,10 +245,9 @@ async def secure_step(page, current_finder, next_finder_check, step_name, pre_ac
 async def master_loop():
     global BOT_RUNNING
     
-    # ⛔ STRICT PROXY CHECK ⛔
     check_proxy = get_strict_proxy()
     if not check_proxy:
-        log_msg("⛔ FATAL: No Proxy Set! Please set a proxy first.")
+        log_msg("⛔ FATAL: No Proxy Set! Stopping.")
         BOT_RUNNING = False
         return
 
@@ -261,14 +257,13 @@ async def master_loop():
         current_number = get_next_number()
         if not current_number:
             log_msg("ℹ️ Number list empty.")
-            current_number = f"9{random.randint(100000000, 999999999)}" # Demo
+            current_number = f"9{random.randint(100000000, 999999999)}"
             
         target_country = SETTINGS["country"]
-        
-        # 🔥 GET STRICT PROXY 🔥
         proxy_cfg = get_strict_proxy()
+        
         if not proxy_cfg:
-            log_msg("⛔ Proxy List Empty/Invalid. Stopping.")
+            log_msg("⛔ Proxy List Invalid. Stopping.")
             BOT_RUNNING = False
             break
             
@@ -288,14 +283,7 @@ async def run_single_session(phone_number, country_name, proxy_config):
     try:
         async with async_playwright() as p:
             launch_args = {"headless": True, "args": ["--disable-blink-features=AutomationControlled", "--no-sandbox"]}
-            
-            # 🔥 INJECT PROXY 🔥
-            if proxy_config: 
-                launch_args["proxy"] = proxy_config
-            else:
-                # Double Safety: If logic failed and came here without proxy
-                log_msg("⛔ Proxy Error inside Launcher") 
-                return "skipped"
+            launch_args["proxy"] = proxy_config # STRICT PROXY INJECTION
 
             log_msg("🚀 Launching Browser...")
             try:
@@ -314,11 +302,10 @@ async def run_single_session(phone_number, country_name, proxy_config):
             log_msg("🌐 Loading...")
             try:
                 if not BOT_RUNNING: return "stopped"
-                # Strict Timeout for Proxy
                 await page.goto(BASE_URL, timeout=45000) 
                 await capture_step(page, "01_Loaded", wait_time=2)
 
-                # 1. REGISTER
+                # 1. REGISTER (Pure Text Match)
                 if not await secure_step(
                     page, 
                     lambda: page.get_by_text("Register", exact=True), 
@@ -330,7 +317,6 @@ async def run_single_session(phone_number, country_name, proxy_config):
                 cb_text = page.get_by_text("stay informed", exact=False).first
                 async def click_checkbox():
                     if await cb_text.count() > 0: 
-                        # Checkbox always uses Strategy 3 (Safe Tap)
                         await execute_click_strategy(page, cb_text, 3, "Checkbox")
 
                 if not await secure_step(
@@ -366,18 +352,16 @@ async def run_single_session(phone_number, country_name, proxy_config):
                 if await page.get_by_placeholder("Search", exact=False).count() > 0:
                     list_opened = True
                 else:
-                    # Strategy loop for opening list
                     lbl = page.get_by_text("Country/Region").first
                     if await lbl.count() > 0:
-                        # Try strategies 1-5 specifically aiming at right edge
+                        # Try all strategies on the Label/Row
                         for i in range(1, 6):
-                            await execute_click_strategy(page, lbl, 4, "CountryRow_Open") # Force Right Tap Strategy
+                            await execute_click_strategy(page, lbl, 4, "CountryRow_Open") # Force Right Tap
                             await asyncio.sleep(1)
                             if await page.get_by_placeholder("Search", exact=False).count() > 0:
                                 list_opened = True; break
                     else:
-                        # Fallback blind tap
-                        await page.touchscreen.tap(380, 200)
+                        await page.touchscreen.tap(380, 200) # Blind tap
                         await asyncio.sleep(2)
                         if await page.get_by_placeholder("Search", exact=False).count() > 0: list_opened = True
 
@@ -386,7 +370,7 @@ async def run_single_session(phone_number, country_name, proxy_config):
                     await browser.close(); return "retry"
                 
                 search = page.get_by_placeholder("Search", exact=False).first
-                await search.click() # Search input is simple
+                await search.click()
                 await page.keyboard.type(country_name, delay=50)
                 await capture_step(page, "04_Typed", wait_time=2) 
                 
@@ -409,8 +393,6 @@ async def run_single_session(phone_number, country_name, proxy_config):
                     await page.touchscreen.tap(350, 100)
                     
                     get_code_btn = page.locator(".get-code-btn").or_(page.get_by_text("Get code")).first
-                    
-                    # Try strategies on Get Code
                     await execute_click_strategy(page, get_code_btn, 1, "GET CODE")
                     await capture_step(page, "GetCodeClick", wait_time=2)
 

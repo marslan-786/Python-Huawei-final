@@ -168,7 +168,6 @@ async def capture_step(page, step_name, wait_time=0):
     try: await page.screenshot(path=filename)
     except: pass
 
-# 🔥 IMPROVED RED DOT (PERSISTENT) 🔥
 async def show_red_dot(page, x, y):
     try:
         await page.evaluate(f"""
@@ -185,7 +184,6 @@ async def show_red_dot(page, x, y):
             dot.style.border = '3px solid white'; 
             dot.style.boxShadow = '0 0 15px rgba(255,0,0,0.8)';
             document.body.appendChild(dot);
-            // Wait 3 seconds before removing so it shows in screenshot
             setTimeout(() => {{ dot.remove(); }}, 3000);
         """)
     except: pass
@@ -205,34 +203,26 @@ async def visual_tap(page, element, desc):
     except: pass
     return False
 
-# 🔥 SECURE STEP LOGIC 🔥
 async def secure_step(page, current_finder, next_finder_check, step_name, pre_action=None):
     max_retries = 5
     for i in range(max_retries):
         if not BOT_RUNNING: return False
-        
         try:
             if await next_finder_check().count() > 0: return True
         except: pass
-
         try:
             btn = current_finder()
             if await btn.count() > 0:
                 log_msg(f"♻️ Attempt {i+1}: Clicking {step_name}...")
                 if pre_action: await pre_action()
                 await visual_tap(page, btn.first, step_name)
-                
-                # Capture THE CLICK visual immediately
-                await asyncio.sleep(0.5) # Wait a bit for dot to render
+                await asyncio.sleep(0.5) 
                 await capture_step(page, f"{step_name}_ClickVis_{i+1}", wait_time=0)
-                
-                await asyncio.sleep(3) # Wait for page load
+                await asyncio.sleep(3) 
             else:
                 log_msg(f"⏳ {step_name} clicked, waiting...")
                 await asyncio.sleep(2)
-        except Exception as e:
-            log_msg(f"⚠️ Error: {e}")
-    
+        except Exception as e: log_msg(f"⚠️ Error: {e}")
     log_msg(f"❌ Failed to pass {step_name}.")
     return False
 
@@ -254,11 +244,17 @@ async def master_loop():
                 result = await run_single_session(current_number, target_country, proxy_cfg)
             except Exception as e:
                 log_msg(f"🔥 Crash Error: {e}"); result = "retry"
+            
+            # 🔥 NEW SKIP LOGIC 🔥
+            if result == "skipped":
+                log_msg("⏭️ Fatal Error on Number. Skipping to next...")
+                break # Break retry loop, move to next number immediately
+            
             if result == "success": success = True; break 
             else: log_msg("⚠️ Attempt Failed. Retrying..."); await asyncio.sleep(2)
         
         if success: log_msg("🎉 Verified! Moving to next number...")
-        else: log_msg("❌ Failed 3 times. Skipping number.")
+        else: log_msg("❌ Failed or Skipped. Checking next.")
         await asyncio.sleep(1)
 
 async def run_single_session(phone_number, country_name, proxy_config):
@@ -326,7 +322,6 @@ async def run_single_session(phone_number, country_name, proxy_config):
                 if not success: await browser.close(); return "retry"
 
                 # STEP 4: USE PHONE NUMBER -> COUNTRY SELECTOR
-                # Notice: Only checking for label visibility, not clickability
                 success = await secure_step(
                     page,
                     lambda: page.get_by_text("Use phone number", exact=False),
@@ -335,20 +330,15 @@ async def run_single_session(phone_number, country_name, proxy_config):
                 )
                 if not success: await browser.close(); return "retry"
 
-                # --- 🔥 TARGET ARROW ONLY 🔥 ---
+                # --- TARGET ARROW ONLY ---
                 log_msg(f"🌍 Switching to {country_name}...")
-                
                 list_opened = False
                 for i in range(4):
-                    # 🔥 FIXED: Look specifically for SEARCH input (by placeholder)
-                    # This prevents detecting the Phone Number input as the Search bar
+                    # Check for Search Input
                     search_box = page.get_by_placeholder("Search", exact=False)
-                    
                     if await search_box.count() > 0:
                         log_msg("✅ TRUE Search Bar Detected!")
                         list_opened = True; break
-                    
-                    log_msg(f"🔎 Looking for Arrow/Row (Try {i+1})...")
                     
                     arrow = page.locator(".hwid-list-item-arrow").first
                     label = page.get_by_text("Country/Region").first
@@ -356,60 +346,37 @@ async def run_single_session(phone_number, country_name, proxy_config):
                     if await arrow.count() > 0: 
                         log_msg("🎯 Found Arrow Icon! Tapping...")
                         await visual_tap(page, arrow, "ArrowIcon")
-                    
                     elif await label.count() > 0: 
-                        log_msg("⚠️ Arrow class missing. Using Smart Coordinates...")
+                        log_msg("⚠️ Arrow missing. Using Coords...")
                         box = await label.bounding_box()
                         if box:
                             x_target = 370 
                             y_target = box['y'] + (box['height'] / 2)
-                            
-                            log_msg(f"📍 Tapping Coords: X={x_target}, Y={y_target}")
-                            
-                            # SHOW RED DOT MANUALLY
                             await show_red_dot(page, x_target, y_target)
-                            await asyncio.sleep(0.5) # Wait for dot to appear
-                            
-                            # TAP
+                            await asyncio.sleep(0.5)
                             await page.touchscreen.tap(x_target, y_target)
-                            
-                            # CAPTURE
                             await capture_step(page, f"05_Arrow_CoordClick_{i+1}", wait_time=0)
                     else:
-                        log_msg("❌ CRITICAL: Country/Region Row NOT FOUND.")
-                    
+                        log_msg("❌ Country/Region Row NOT FOUND.")
                     await asyncio.sleep(2) 
                 
                 if not list_opened:
-                    log_msg("❌ Failed to open Country List (Search box never appeared).")
+                    log_msg("❌ Failed to open Country List.")
                     await browser.close(); return "retry"
                 
-                # --- LIST IS OPEN ---
+                # If List Opened -> Search & Select
                 await capture_step(page, "06_ListOpened", wait_time=0.5)
-                
-                # 🔥 FIXED: Use the specific Search Input
                 search = page.get_by_placeholder("Search", exact=False).first
-                log_msg("⌨️ Tapping Search Input...")
                 await visual_tap(page, search, "Search")
-                
-                log_msg(f"⌨️ Typing {country_name}...")
                 await page.keyboard.type(country_name, delay=50)
                 await capture_step(page, "07_Typed", wait_time=2) 
                 
                 matches = page.get_by_text(country_name, exact=False)
                 count = await matches.count()
-                log_msg(f"🔍 Found {count} matches for {country_name}")
-
-                # Logic: If count > 1, first one is likely the input text itself, second is result
-                if count > 1:
-                    await visual_tap(page, matches.nth(1), f"CountryResult_{country_name}")
-                elif count == 1:
-                    await visual_tap(page, matches.first, f"CountryResult_{country_name}")
-                else:
-                    log_msg(f"❌ {country_name} not found"); await browser.close(); return "retry"
-                
+                if count > 1: await visual_tap(page, matches.nth(1), f"CountryResult_{country_name}")
+                elif count == 1: await visual_tap(page, matches.first, f"CountryResult_{country_name}")
+                else: log_msg(f"❌ {country_name} not found"); await browser.close(); return "retry"
                 await capture_step(page, "08_Selected", wait_time=1)
-                # --- 🔥 END ARROW LOGIC 🔥 ---
 
                 # STEP 6: INPUT NUMBER
                 inp = page.locator("input[type='tel']").first
@@ -429,6 +396,14 @@ async def run_single_session(phone_number, country_name, proxy_config):
                         await visual_tap(page, get_code_btn, "GET CODE")
                         await capture_step(page, "10_GetCodeClicked", wait_time=2)
                         
+                        # 🔥 NEW: CHECK FOR ERROR POPUP (SKIP LOGIC) 🔥
+                        err_popup = page.get_by_text("An unexpected problem", exact=False)
+                        if await err_popup.count() > 0:
+                            log_msg("⛔ FATAL: 'Unexpected Problem' detected!")
+                            await capture_step(page, "Fatal_Error_Popup", wait_time=0)
+                            await browser.close()
+                            return "skipped" # <--- THIS SKIPS THE NUMBER
+
                         log_msg("⏳ Waiting for Captcha...")
                         start_time = time.time()
                         
@@ -444,15 +419,17 @@ async def run_single_session(phone_number, country_name, proxy_config):
                                 except: pass
                             
                             if captcha_frame:
-                                log_msg("🧩 CAPTCHA DETECTED.")
-                                await capture_step(page, "11_CaptchaFound", wait_time=0.5)
+                                log_msg("🧩 CAPTCHA DETECTED. Waiting 5s for full load...")
+                                # 🔥 WAITING 5 SECONDS BEFORE SOLVING 🔥
+                                await asyncio.sleep(5) 
+                                await capture_step(page, "11_CaptchaFound", wait_time=0)
+                                
                                 session_id = f"sess_{int(time.time())}"
                                 ai_success = await solve_captcha(page, session_id, logger=log_msg)
                                 
                                 if not ai_success: await browser.close(); return "retry"
                                 
                                 await capture_step(page, "12_Solving", wait_time=5)
-                                
                                 is_still_there = False
                                 for frame in page.frames:
                                     try:

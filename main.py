@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from playwright.async_api import async_playwright
 
-# --- 1. INITIALIZE APP (Sabse Pehle) ---
+# --- 1. INITIALIZE APP ---
 app = FastAPI()
 
 # --- CONFIGURATION ---
@@ -27,7 +27,7 @@ BASE_URL = "https://id5.cloud.huawei.com"
 if not os.path.exists(CAPTURE_DIR): os.makedirs(CAPTURE_DIR)
 app.mount("/captures", StaticFiles(directory=CAPTURE_DIR), name="captures")
 
-# --- IMPORT SOLVER (Safe Mode) ---
+# --- IMPORT SOLVER ---
 try:
     from captcha_solver import solve_captcha
 except ImportError:
@@ -201,7 +201,6 @@ async def master_loop():
         
         if not retry_same_number: current_number = get_next_number()
         
-        # Log safe proxy info
         p_log = "NO"
         if proxy_cfg: p_log = f"{proxy_cfg['server']}"
         
@@ -245,8 +244,6 @@ async def run_single_session(phone_number, country_name, proxy_config):
             try:
                 if not BOT_RUNNING: return "stopped"
                 await page.goto(BASE_URL, timeout=60000)
-                
-                # 📸 1. Initial Load
                 await capture_step(page, "01_HomePage", wait_time=3)
 
                 # 1. REGISTER
@@ -285,7 +282,7 @@ async def run_single_session(phone_number, country_name, proxy_config):
                     log_msg("⏳ Waiting 2s for Page Load...")
                     await capture_step(page, "05_UsePhoneClicked", wait_time=3)
 
-                # 5. COUNTRY SWITCH
+                # 5. COUNTRY SWITCH (FIXED LOGIC)
                 log_msg(f"🌍 Switching to {country_name}...")
                 hk = page.get_by_text("Hong Kong").first
                 if await hk.count() == 0: hk = page.get_by_text("Country/Region").first
@@ -298,14 +295,29 @@ async def run_single_session(phone_number, country_name, proxy_config):
                     if await search.count() > 0:
                         await visual_tap(page, search, "Search")
                         await page.keyboard.type(country_name, delay=50)
-                        await capture_step(page, "07_CountryTyped", wait_time=0.5)
                         
-                        target_c = page.get_by_text(country_name, exact=False).first
-                        if await target_c.count() > 0: 
+                        # Wait for results to appear
+                        await capture_step(page, "07_CountryTyped", wait_time=3)
+                        
+                        # 🔥 SMART SELECTION: Avoid clicking the search bar
+                        # Get all elements with country name
+                        matches = page.get_by_text(country_name, exact=False)
+                        count = await matches.count()
+                        
+                        target_c = None
+                        if count > 1:
+                            # If more than 1 match (Input + Result), Click the 2nd one
+                            log_msg(f"🔍 Found {count} matches. Clicking Result (Not Input)...")
+                            target_c = matches.nth(1)
+                        elif count == 1:
+                             # If only 1, Click that one
+                             target_c = matches.first
+                        
+                        if target_c: 
                             await visual_tap(page, target_c, country_name)
-                            await capture_step(page, "08_CountrySelected", wait_time=0.5)
+                            await capture_step(page, "08_CountrySelected", wait_time=1)
                         else:
-                            log_msg(f"❌ {country_name} Not Found"); await browser.close(); return "retry"
+                            log_msg(f"❌ {country_name} Not Found in List"); await browser.close(); return "retry"
                     else:
                         log_msg("❌ Search Missing"); await browser.close(); return "retry"
                 else:

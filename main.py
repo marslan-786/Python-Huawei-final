@@ -315,6 +315,10 @@ async def run_session(phone, country, proxy):
                     lambda: page.get_by_text("Agree", exact=True).or_(page.get_by_text("Next", exact=True)), 
                     "Register"
                 ): await browser.close(); return "retry"
+                
+                # 🔥 WAIT ADDED: 3 Seconds after Register click
+                log_msg("⏳ Wait 3s after Register...", level="step")
+                await asyncio.sleep(3)
 
                 # 2. AGREE
                 cb_finder = lambda: page.get_by_text("stay informed", exact=False)
@@ -326,6 +330,10 @@ async def run_session(phone, country, proxy):
                     checkbox_finder=cb_finder
                 ): await browser.close(); return "retry"
 
+                # 🔥 WAIT ADDED: 3 Seconds after Agree/Checkbox
+                log_msg("⏳ Wait 3s after Agree...", level="step")
+                await asyncio.sleep(3)
+
                 # 3. DOB -> PHONE
                 await page.mouse.move(200, 500); await page.mouse.down()
                 await page.mouse.move(200, 800, steps=10); await page.mouse.up()
@@ -336,6 +344,10 @@ async def run_session(phone, country, proxy):
                     "DOB_Next"
                 ): await browser.close(); return "retry"
 
+                # 🔥 WAIT ADDED: 3 Seconds after DOB Next
+                log_msg("⏳ Wait 3s after DOB...", level="step")
+                await asyncio.sleep(3)
+
                 # 4. USE PHONE
                 if not await secure_step(
                     page,
@@ -343,6 +355,10 @@ async def run_session(phone, country, proxy):
                     lambda: page.get_by_text("Country/Region"), 
                     "UsePhone"
                 ): await browser.close(); return "retry"
+
+                # 🔥 WAIT ADDED: 3 Seconds before Country Selection
+                log_msg("⏳ Wait 3s before Country select...", level="step")
+                await asyncio.sleep(3)
 
                 # 5. COUNTRY SWITCH
                 log_msg(f"🌍 Selecting {country}...", level="step")

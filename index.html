@@ -16,23 +16,22 @@
 
         .container { display: flex; flex-direction: column; padding: 20px; gap: 20px; height: calc(100vh - 80px); }
         
-        /* --- STATS BOXES --- */
+        /* STATS */
         .stats-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px; }
         .stat-box { background: var(--panel); padding: 15px; border-radius: 10px; text-align: center; box-shadow: 0 4px 6px rgba(0,0,0,0.3); border-top: 3px solid transparent; }
         .stat-box h3 { margin: 0; font-size: 14px; color: #94a3b8; font-weight: normal; }
         .stat-box .count { font-size: 28px; font-weight: bold; margin-top: 5px; }
-        
         .stat-total { border-color: var(--accent); }
         .stat-success { border-color: var(--green); }
         .stat-failed { border-color: var(--red); }
 
-        /* --- MAIN CARD --- */
+        /* CARD & UPLOAD */
         .card { background: var(--panel); padding: 20px; border-radius: 10px; }
         .form-group { margin-bottom: 15px; }
         label { display: block; margin-bottom: 5px; font-size: 12px; color: #94a3b8; }
         select, input[type="text"] { width: 100%; padding: 10px; background: #0f172a; border: 1px solid #334155; color: white; border-radius: 5px; outline: none; }
         
-        .upload-box { border: 2px dashed #334155; padding: 15px; text-align: center; border-radius: 5px; cursor: pointer; transition: 0.2s; background: #0f172a; }
+        .upload-box { border: 2px dashed #334155; padding: 15px; text-align: center; border-radius: 5px; cursor: pointer; transition: 0.2s; background: #0f172a; position: relative; overflow: hidden; }
         .upload-box:hover { border-color: var(--accent); background: #1e3a8a; }
         
         .btn-control { width: 100%; padding: 15px; font-size: 18px; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; margin-top: 10px; transition: 0.2s; }
@@ -40,16 +39,21 @@
         .stop { background: var(--red); color: white; }
         .btn-control:hover { opacity: 0.9; }
 
-        /* --- TERMINAL --- */
-        .terminal { background: black; color: #00e676; font-family: monospace; flex: 1; overflow-y: auto; padding: 15px; border-radius: 5px; font-size: 12px; border: 1px solid #333; }
-        .terminal div { margin-bottom: 4px; border-bottom: 1px solid #111; padding-bottom: 2px; }
+        /* TERMINAL (UPDATED) */
+        .terminal { background: black; color: #00e676; font-family: 'Courier New', monospace; flex: 1; overflow-y: auto; padding: 15px; border-radius: 5px; font-size: 13px; border: 1px solid #333; display: flex; flex-direction: column; }
+        .terminal div { margin-bottom: 2px; word-wrap: break-word; }
 
-        /* --- MODAL (GALLERY & SETTINGS) --- */
+        /* TOAST NOTIFICATION (AUTO HIDE ERROR) */
+        #toast { visibility: hidden; min-width: 250px; background-color: #ef4444; color: #fff; text-align: center; border-radius: 5px; padding: 16px; position: fixed; z-index: 2000; left: 50%; transform: translateX(-50%); top: 30px; font-size: 14px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); opacity: 0; transition: opacity 0.5s, top 0.5s; }
+        #toast.show { visibility: visible; opacity: 1; top: 50px; }
+
+        /* MODALS */
         .modal { display: none; position: fixed; top:0; left:0; width:100%; height:100%; background: rgba(0,0,0,0.9); align-items: center; justify-content: center; z-index: 1000; }
         .modal-content { background: var(--panel); padding: 20px; width: 90%; max-width: 500px; border-radius: 10px; max-height: 80vh; overflow-y: auto; }
         .modal-header { display: flex; justify-content: space-between; margin-bottom: 20px; border-bottom: 1px solid #333; padding-bottom: 10px; }
         .gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 10px; }
-        .gallery-grid img { width: 100%; border-radius: 5px; border: 1px solid #444; cursor: pointer; }
+        .gallery-grid img { width: 100%; border-radius: 5px; border: 1px solid #444; cursor: pointer; transition: 0.2s; }
+        .gallery-grid img:hover { transform: scale(1.05); border-color: var(--accent); }
         
         .modal-actions { display: flex; gap: 10px; margin-top: 20px; }
         .btn-save { background: var(--green); flex: 1; border:none; padding: 10px; color: white; border-radius: 5px; cursor: pointer; }
@@ -59,15 +63,17 @@
 </head>
 <body>
 
+    <div id="toast">Error Message</div>
+
     <div id="settingsModal" class="modal">
         <div class="modal-content">
             <div class="modal-header"><h3>⚙️ Configuration</h3></div>
             <div class="form-group">
-                <label>Upload Proxy List (File)</label>
+                <label>Upload Proxy List (Only .txt)</label>
                 <div class="upload-box" onclick="document.getElementById('proxyFile').click()">
                     <span id="proxyFileName">Click to Upload Proxies.txt</span>
                 </div>
-                <input type="file" id="proxyFile" hidden onchange="uploadFile('proxyFile', '/upload_proxies', 'proxyFileName')">
+                <input type="file" id="proxyFile" accept=".txt" hidden onchange="uploadFile('proxyFile', '/upload_proxies', 'proxyFileName')">
             </div>
             <div class="form-group">
                 <label>Or Manual Proxy (host:port)</label>
@@ -83,11 +89,10 @@
     <div id="galleryModal" class="modal">
         <div class="modal-content" style="max-width: 800px;">
             <div class="modal-header">
-                <h3>📸 Proof Gallery (Success/Error)</h3>
+                <h3>📸 Critical Events (Success/Stuck/Error)</h3>
                 <button class="icon-btn" onclick="toggleModal('galleryModal')"><i class="fas fa-times"></i></button>
             </div>
-            <div class="gallery-grid" id="galleryGrid">
-                </div>
+            <div class="gallery-grid" id="galleryGrid"></div>
             <br>
             <button class="btn-control" style="background:#2563eb;" onclick="makeVideo()">🎥 Generate Video</button>
         </div>
@@ -127,7 +132,7 @@
                 <div class="upload-box" onclick="document.getElementById('numFile').click()">
                     <span id="numFileName">📂 Upload Numbers.txt</span>
                 </div>
-                <input type="file" id="numFile" hidden onchange="uploadFile('numFile', '/upload_numbers', 'numFileName')">
+                <input type="file" id="numFile" accept=".txt" hidden onchange="uploadFile('numFile', '/upload_numbers', 'numFileName')">
             </div>
             <button id="mainBtn" class="btn-control start" onclick="toggleBot()">START BOT</button>
         </div>
@@ -141,10 +146,11 @@
     <script>
         const countries = ["Afghanistan","Albania","Algeria","Andorra","Angola","Argentina","Armenia","Australia","Austria","Azerbaijan","Bahrain","Bangladesh","Belarus","Belgium","Belize","Benin","Bhutan","Bolivia","Bosnia","Botswana","Brazil","Brunei","Bulgaria","Burkina Faso","Burundi","Cambodia","Cameroon","Canada","Chad","Chile","China","Colombia","Comoros","Congo","Costa Rica","Croatia","Cuba","Cyprus","Czech Republic","Denmark","Djibouti","Dominica","Ecuador","Egypt","Estonia","Ethiopia","Fiji","Finland","France","Gabon","Gambia","Georgia","Germany","Ghana","Greece","Guatemala","Guinea","Haiti","Honduras","Hong Kong","Hungary","Iceland","India","Indonesia","Iran","Iraq","Ireland","Israel","Italy","Jamaica","Japan","Jordan","Kazakhstan","Kenya","Kuwait","Kyrgyzstan","Laos","Latvia","Lebanon","Lesotho","Liberia","Libya","Liechtenstein","Lithuania","Luxembourg","Macau","Madagascar","Malawi","Malaysia","Maldives","Mali","Malta","Mauritania","Mauritius","Mexico","Moldova","Monaco","Mongolia","Montenegro","Morocco","Mozambique","Myanmar","Namibia","Nepal","Netherlands","New Zealand","Nicaragua","Niger","Nigeria","North Korea","Norway","Oman","Pakistan","Palestine","Panama","Papua New Guinea","Paraguay","Peru","Philippines","Poland","Portugal","Qatar","Romania","Russia","Rwanda","Saudi Arabia","Senegal","Serbia","Singapore","Slovakia","Slovenia","Somalia","South Africa","South Korea","Spain","Sri Lanka","Sudan","Sweden","Switzerland","Syria","Taiwan","Tajikistan","Tanzania","Thailand","Timor-Leste","Togo","Tunisia","Turkey","Turkmenistan","Uganda","Ukraine","UAE","United Kingdom","United States","Uruguay","Uzbekistan","Venezuela","Vietnam","Yemen","Zambia","Zimbabwe"];
 
-        // State Vars for Counts
+        // State Vars
         let totalNums = 0;
         let successCount = 0;
         let failCount = 0;
+        let userScrolledUp = false; // To track scroll position
 
         window.onload = function() {
             const sel = document.getElementById('countrySelect');
@@ -157,7 +163,25 @@
             if(savedC) sel.value = savedC;
             const savedP = localStorage.getItem('manualProxy');
             if(savedP) document.getElementById('manualProxy').value = savedP;
+
+            // Scroll Listener for Terminal Logic
+            const term = document.getElementById('terminal');
+            term.addEventListener('scroll', () => {
+                // If user scrolls up a bit (not at absolute bottom), set flag
+                if (term.scrollTop + term.clientHeight < term.scrollHeight - 10) {
+                    userScrolledUp = true;
+                } else {
+                    userScrolledUp = false;
+                }
+            });
         };
+
+        function showToast(msg) {
+            const x = document.getElementById("toast");
+            x.innerText = msg;
+            x.className = "show";
+            setTimeout(function(){ x.className = x.className.replace("show", ""); }, 3000);
+        }
 
         function toggleModal(id) {
             const m = document.getElementById(id);
@@ -166,23 +190,33 @@
 
         async function uploadFile(inputId, endpoint, labelId) {
             const fileInput = document.getElementById(inputId);
-            if(fileInput.files.length === 0) return;
+            const file = fileInput.files[0];
+
+            // 1. Check if file selected
+            if(!file) return;
+
+            // 2. Strict .txt Check
+            if (!file.name.endsWith('.txt')) {
+                showToast("🚫 Error: Only .txt files supported!");
+                fileInput.value = ""; // Clear input
+                return;
+            }
+
             const formData = new FormData();
-            formData.append('file', fileInput.files[0]);
+            formData.append('file', file);
             document.getElementById(labelId).innerText = "Uploading...";
             
-            // If uploading numbers, reset count
+            // If uploading numbers, count lines for stats
             if(inputId === 'numFile') {
-                // Approximate line count
-                const text = await fileInput.files[0].text();
+                const text = await file.text();
                 totalNums = text.split('\n').filter(l => l.trim()).length;
                 document.getElementById('countTotal').innerText = totalNums;
             }
 
             try {
                 await fetch(endpoint, { method: 'POST', body: formData });
-                document.getElementById(labelId).innerText = "✅ " + fileInput.files[0].name;
-            } catch(e) { alert("Upload Failed"); }
+                document.getElementById(labelId).innerText = "✅ " + file.name;
+            } catch(e) { showToast("Upload Failed!"); }
         }
 
         async function saveSettings() {
@@ -206,7 +240,7 @@
                 btn.innerText = "🛑 STOP BOT";
                 btn.classList.remove('start'); btn.classList.add('stop');
                 isRunning = true;
-                // Reset session counts
+                // Reset counts
                 successCount = 0; failCount = 0;
                 document.getElementById('countSuccess').innerText = 0;
                 document.getElementById('countFailed').innerText = 0;
@@ -220,13 +254,11 @@
 
         async function openGallery() {
             toggleModal('galleryModal');
-            // Fetch images again just to be sure
-            // Images are already in data object from pollStatus, but we can refresh grid here
         }
 
         function makeVideo() {
             fetch('/generate_video', {method: 'POST'}).then(r=>r.json()).then(d=>{
-                alert(d.status === "done" ? "Video Generated" : "Error");
+                showToast(d.status === "done" ? "🎥 Video Generated!" : "Error Generating Video");
             });
         }
 
@@ -236,10 +268,19 @@
                 const res = await fetch('/status');
                 const data = await res.json();
                 
-                // 1. Logs
+                // 1. Logs (Smart Scroll)
                 const term = document.getElementById('terminal');
-                term.innerHTML = data.logs.map(l => `<div>${l}</div>`).join('');
-                term.scrollTop = term.scrollHeight; // Auto scroll
+                // We assume new logs come in order. Ideally, just append new ones, but replacing innerHTML is safer for sync.
+                // Reversing logic: Python sends latest first usually, but here we want chronological (top-down).
+                // Assuming data.logs is [latest, ..., oldest], let's reverse for display.
+                const chronoLogs = [...data.logs].reverse(); 
+                
+                term.innerHTML = chronoLogs.map(l => `<div>${l}</div>`).join('');
+                
+                // Only auto-scroll if user hasn't scrolled up
+                if (!userScrolledUp) {
+                    term.scrollTop = term.scrollHeight; 
+                }
 
                 // 2. Button State
                 const btn = document.getElementById('mainBtn');
@@ -249,26 +290,34 @@
                     btn.classList.remove('start'); btn.classList.add('stop');
                 }
 
-                // 3. Stats Parsing (Simple heuristic from logs)
-                // We count occurrence of "Verified" and "Failed" in logs to update UI
-                // Note: Better to get real counts from backend, but for now parsing logs:
+                // 3. Stats
                 const logsStr = data.logs.join('\n');
                 const succ = (logsStr.match(/Verified/g) || []).length;
                 const fail = (logsStr.match(/Failed/g) || []).length;
                 
-                // Only update if increased (to avoid reset on log clear)
                 if(succ > successCount) successCount = succ;
                 if(fail > failCount) failCount = fail;
                 
                 document.getElementById('countSuccess').innerText = successCount;
                 document.getElementById('countFailed').innerText = failCount;
 
-                // 4. Gallery Grid (Only update if modal is open)
+                // 4. Gallery Filter (Strict: Success, Stuck, Error)
                 if(document.getElementById('galleryModal').style.display === 'flex') {
                     const grid = document.getElementById('galleryGrid');
-                    grid.innerHTML = data.images.map(url => 
-                        `<img src="${url}" onclick="window.open('${url}', '_blank')">`
-                    ).join('');
+                    // Filter images
+                    const filteredImages = data.images.filter(url => 
+                        url.includes("Success_") || 
+                        url.includes("Stuck_") || 
+                        url.includes("Error_")
+                    );
+                    
+                    if (filteredImages.length === 0) {
+                        grid.innerHTML = "<p style='color:#888; text-align:center;'>No critical events captured yet.</p>";
+                    } else {
+                        grid.innerHTML = filteredImages.map(url => 
+                            `<img src="${url}" onclick="window.open('${url}', '_blank')" title="${url.split('/').pop()}">`
+                        ).join('');
+                    }
                 }
 
             } catch(e) {}

@@ -154,25 +154,25 @@ async def execute_click_strategy(page, element, strategy_id, desc):
         ry = cy
 
         if strategy_id == 1:
-            log_msg(f"🔹 Logic 1 (Standard): {desc}")
+     #       log_msg(f"🔹 Logic 1 (Standard): {desc}")
             await element.click(force=True, timeout=2000)
 
         elif strategy_id == 2:
-            log_msg(f"🔹 Logic 2 (JS Force): {desc}")
+      #      log_msg(f"🔹 Logic 2 (JS Force): {desc}")
             await element.evaluate("e => e.click()")
 
         elif strategy_id == 3:
-            log_msg(f"🔹 Logic 3 (Tap Center): {desc}")
+    #        log_msg(f"🔹 Logic 3 (Tap Center): {desc}")
             await show_red_dot(page, cx, cy)
             await page.touchscreen.tap(cx, cy)
 
         elif strategy_id == 4:
-            log_msg(f"🔹 Logic 4 (Tap Right): {desc}")
+    #        log_msg(f"🔹 Logic 4 (Tap Right): {desc}")
             await show_red_dot(page, rx, ry)
             await page.touchscreen.tap(rx, ry)
 
         elif strategy_id == 5:
-            log_msg(f"🔹 Logic 5 (CDP Hammer): {desc}")
+    #        log_msg(f"🔹 Logic 5 (CDP Hammer): {desc}")
             await show_red_dot(page, cx, cy)
             client = await page.context.new_cdp_session(page)
             await client.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [{"x": cx, "y": cy}]})
@@ -193,7 +193,7 @@ async def secure_step(page, finder_func, success_check, step_name, checkbox_find
         if not BOT_RUNNING: return False
         
         # 🔥 WAIT BEFORE FINDING (Stabilize Page)
-        log_msg(f"⏳ Waiting for {step_name}...")
+   #     log_msg(f"⏳ Waiting for {step_name}...")
         await asyncio.sleep(3) 
         
         try:
@@ -218,7 +218,7 @@ async def secure_step(page, finder_func, success_check, step_name, checkbox_find
                 if await success_check().count() > 0:
                     return True
             else:
-                log_msg(f"⚠️ {step_name} not found yet...")
+         #       log_msg(f"⚠️ {step_name} not found yet...")
         except Exception: pass
     
     log_msg(f"❌ Failed: {step_name}")
@@ -317,7 +317,7 @@ async def run_session(phone, country, proxy):
                 ): await browser.close(); return "retry"
 
                 # 5. COUNTRY SWITCH
-                log_msg(f"🌍 Selecting {country}...")
+           #     log_msg(f"🌍 Selecting {country}...")
                 
                 list_opener = lambda: page.get_by_text("Hong Kong", exact=False)
                
@@ -333,7 +333,7 @@ async def run_session(phone, country, proxy):
                     await page.touchscreen.tap(380, 200)
                     await asyncio.sleep(3)
                     if await page.get_by_placeholder("Search", exact=False).count() == 0:
-                        log_msg("❌ List Open Failed")
+                      #  log_msg("❌ List Open Failed")
                         await browser.close(); return "retry"
 
                 search = page.get_by_placeholder("Search", exact=False).first
@@ -352,7 +352,7 @@ async def run_session(phone, country, proxy):
                 if await inp.count() == 0: inp = page.locator("input").first
                 
                 if await inp.count() > 0:
-                    log_msg("🔢 Inputting Phone...")
+               #     log_msg("🔢 Inputting Phone...")
                     await inp.click()
                     for c in phone:
                         if not BOT_RUNNING: return "stopped"

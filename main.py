@@ -14,11 +14,12 @@ from fastapi.staticfiles import StaticFiles
 from playwright.async_api import async_playwright
 
 # --- 🔥 USER SETTINGS (CONTROL CENTER) 🔥 ---
-live_logs = True  # True = All Logs | False = Only Important
+live_logs = True  # True = سب کچھ | False = صرف اہم
 
-# --- HARDCODED SCRAPER API ---
-SCRAPER_API_KEY = '9643e678c2fa6efe4d2c7cf7b2206be0'
-SCRAPER_PROXY_URL = f"http://scraperapi:{SCRAPER_API_KEY}@proxy-server.scraperapi.com:8001"
+# --- 🔥 HARDCODED SCRAPER API (RESIDENTIAL MODE) 🔥 ---
+API_KEY = '9643e678c2fa6efe4d2c7cf7b2206be0'
+# "scraperapi.residential=true" -> یہ ہواوے کو دھوکہ دینے کے لیے اصلی یوزر کی آئی پی یوز کرے گا
+SCRAPER_PROXY_URL = f"http://scraperapi.residential=true:{API_KEY}@proxy-server.scraperapi.com:8001"
 
 # --- CONFIGURATION ---
 CAPTURE_DIR = "./captures"
@@ -40,10 +41,9 @@ SETTINGS = {"country": "Russia", "proxy_manual": ""}
 BOT_RUNNING = False
 logs = []
 
-# --- 🔥 SMART LOGGER 🔥 ---
+# --- LOGGER ---
 def log_msg(message, level="step"):
-    if level == "step" and not live_logs:
-        return
+    if level == "step" and not live_logs: return
     timestamp = datetime.now().strftime("%H:%M:%S")
     entry = f"[{timestamp}] {message}"
     print(entry)
@@ -70,7 +70,6 @@ def get_strict_proxy():
     # 1. Manual
     if SETTINGS["proxy_manual"] and len(SETTINGS["proxy_manual"]) > 5:
         return parse_proxy_string(SETTINGS["proxy_manual"])
-    
     # 2. File
     if os.path.exists(PROXY_FILE):
         try:
@@ -79,7 +78,7 @@ def get_strict_proxy():
             if lines: return parse_proxy_string(random.choice(lines))
         except: pass
     
-    # 3. 🔥 FALLBACK (HARDCODED) 🔥
+    # 3. FALLBACK (ScraperAPI Residential)
     return parse_proxy_string(SCRAPER_PROXY_URL)
 
 def get_next_number():
@@ -171,7 +170,7 @@ async def show_red_dot(page, x, y):
         """)
     except: pass
 
-# --- 🔥 STRATEGY LOGIC 🔥 ---
+# --- CLICK LOGIC ---
 async def execute_click_strategy(page, element, strategy_id, desc):
     try:
         await element.scroll_into_view_if_needed()
@@ -186,21 +185,17 @@ async def execute_click_strategy(page, element, strategy_id, desc):
         if strategy_id == 1:
             log_msg(f"🔹 Logic 1 (Standard): {desc}", level="step")
             await element.click(force=True, timeout=2000)
-
         elif strategy_id == 2:
             log_msg(f"🔹 Logic 2 (JS Force): {desc}", level="step")
             await element.evaluate("e => e.click()")
-
         elif strategy_id == 3:
             log_msg(f"🔹 Logic 3 (Tap Center): {desc}", level="step")
             await show_red_dot(page, cx, cy)
             await page.touchscreen.tap(cx, cy)
-
         elif strategy_id == 4:
             log_msg(f"🔹 Logic 4 (Tap Right): {desc}", level="step")
             await show_red_dot(page, rx, ry)
             await page.touchscreen.tap(rx, ry)
-
         elif strategy_id == 5:
             log_msg(f"🔹 Logic 5 (CDP Hammer): {desc}", level="step")
             await show_red_dot(page, cx, cy)
@@ -212,7 +207,6 @@ async def execute_click_strategy(page, element, strategy_id, desc):
         return True
     except: return False
 
-# --- 🔥 SECURE STEP 🔥 ---
 async def secure_step(page, finder_func, success_check, step_name, checkbox_finder=None):
     try:
         if await success_check().count() > 0: return True
@@ -227,7 +221,6 @@ async def secure_step(page, finder_func, success_check, step_name, checkbox_find
         try:
             btn = finder_func()
             if await btn.count() > 0:
-                
                 if checkbox_finder:
                     cb = checkbox_finder()
                     if await cb.count() > 0:
@@ -241,10 +234,9 @@ async def secure_step(page, finder_func, success_check, step_name, checkbox_find
                 log_msg("⏳ Page Loading...", level="step")
                 await asyncio.sleep(5) 
                 
-                if await success_check().count() > 0:
-                    return True
+                if await success_check().count() > 0: return True
             else:
-                log_msg(f"⚠️ {step_name} not found yet...", level="step")
+                log_msg(f"⚠️ {step_name} not found...", level="step")
         except Exception: pass
     
     log_msg(f"❌ Failed: {step_name}", level="main")
@@ -254,9 +246,8 @@ async def secure_step(page, finder_func, success_check, step_name, checkbox_find
 # --- WORKER ---
 async def master_loop():
     global BOT_RUNNING
-    
     if not get_strict_proxy():
-        log_msg("⛔ FATAL: No Proxy & ScraperAPI Failed!", level="main")
+        log_msg("⛔ FATAL: No Proxy!", level="main")
         BOT_RUNNING = False; return
 
     log_msg("🟢 Worker Started.", level="main")
@@ -268,7 +259,6 @@ async def master_loop():
             
         proxy_cfg = get_strict_proxy()
         p_show = proxy_cfg['server']
-        
         log_msg(f"🔵 Processing: {current_number}", level="main") 
         log_msg(f"🌍 Proxy: {p_show}", level="step") 
         
@@ -284,20 +274,20 @@ async def master_loop():
 async def run_session(phone, country, proxy):
     try:
         async with async_playwright() as p:
-            # 🔥 CRITICAL FIXES FOR SSL ERRORS 🔥
+            # 🔥 BYPASS SSL & SECURITY ERRORS 🔥
             launch_args = {
                 "headless": True, 
                 "args": [
                     "--disable-blink-features=AutomationControlled", 
                     "--no-sandbox",
-                    "--ignore-certificate-errors", # Ignore SSL
-                    "--ignore-ssl-errors",         # Ignore SSL
-                    "--disable-web-security"       # Allow non-secure content
+                    "--ignore-certificate-errors", # SSL Fix
+                    "--ignore-ssl-errors",         # SSL Fix
+                    "--disable-web-security"       # Security Bypass
                 ]
             }
             launch_args["proxy"] = proxy 
 
-            log_msg("🚀 Launching Browser...", level="step")
+            log_msg("🚀 Launching...", level="step")
             try: browser = await p.chromium.launch(**launch_args)
             except Exception as e: log_msg(f"❌ Proxy Fail: {e}", level="main"); return "retry"
 
@@ -305,20 +295,16 @@ async def run_session(phone, country, proxy):
             pixel_5['viewport'] = {'width': 412, 'height': 950}
             pixel_5['has_touch'] = True 
             
-            # 🔥 IGNORE HTTPS ERRORS IN CONTEXT 🔥
-            context = await browser.new_context(
-                **pixel_5, 
-                locale="en-US",
-                ignore_https_errors=True 
-            )
+            # 🔥 IGNORE HTTPS IN CONTEXT 🔥
+            context = await browser.new_context(**pixel_5, locale="en-US", ignore_https_errors=True)
             page = await context.new_page()
 
             log_msg("🌐 Loading...", level="step")
             try:
                 if not BOT_RUNNING: return "stopped"
-                await page.goto(BASE_URL, timeout=60000) 
+                await page.goto(BASE_URL, timeout=90000) # 90s Timeout for Proxy
                 
-                log_msg("⏳ Stabilizing Page (5s)...", level="step")
+                log_msg("⏳ Stabilizing (5s)...", level="step")
                 await asyncio.sleep(5) 
                 await capture_step(page, "01_Loaded", wait_time=0)
 
@@ -360,8 +346,7 @@ async def run_session(phone, country, proxy):
 
                 # 5. COUNTRY SWITCH
                 log_msg(f"🌍 Selecting {country}...", level="step")
-                
-                list_opener = lambda: page.get_by_text("(Chi", exact=False).or_(page.get_by_text("Hong Kong", exact=False)).or_(page.get_by_text("Country/Region", exact=True))
+                list_opener = lambda: page.get_by_text("Hong Kong", exact=False)
                 
                 list_opened = await secure_step(
                     page,

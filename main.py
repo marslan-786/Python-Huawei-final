@@ -141,7 +141,7 @@ async def show_red_dot(page, x, y):
         """)
     except: pass
 
-# --- 🔥 CLICK STRATEGIES 🔥 ---
+# --- 🔥 STRATEGY LOGIC 🔥 ---
 async def execute_click_strategy(page, element, strategy_id, desc):
     try:
         await element.scroll_into_view_if_needed()
@@ -150,8 +150,6 @@ async def execute_click_strategy(page, element, strategy_id, desc):
         
         cx = box['x'] + box['width'] / 2
         cy = box['y'] + box['height'] / 2
-        
-        # Right Side (For Label fallback)
         rx = box['x'] + box['width'] - 35
         ry = cy
 
@@ -184,39 +182,43 @@ async def execute_click_strategy(page, element, strategy_id, desc):
         return True
     except: return False
 
-# --- 🔥 SECURE STEP (Ladder Logic) 🔥 ---
+# --- 🔥 SECURE STEP WITH WAITS 🔥 ---
 async def secure_step(page, finder_func, success_check, step_name, checkbox_finder=None):
     # Check if already done
     try:
         if await success_check().count() > 0: return True
     except: pass
 
-    # Ladder 1 -> 5
     for logic_level in range(1, 6):
         if not BOT_RUNNING: return False
+        
+        # 🔥 WAIT BEFORE FINDING (Stabilize Page)
+        log_msg(f"⏳ Waiting for {step_name}...")
+        await asyncio.sleep(3) 
         
         try:
             btn = finder_func()
             if await btn.count() > 0:
-                # Handle Checkbox if needed
+                
                 if checkbox_finder:
                     cb = checkbox_finder()
                     if await cb.count() > 0:
                         await execute_click_strategy(page, cb.first, logic_level, "Checkbox")
-                        await asyncio.sleep(0.5)
+                        await asyncio.sleep(1)
 
-                # Click Main Button
                 if logic_level > 1: log_msg(f"♻️ {step_name}: Logic {logic_level}...")
+                
                 await execute_click_strategy(page, btn.first, logic_level, step_name)
                 
-                await asyncio.sleep(0.5)
-                if logic_level > 2: await capture_step(page, f"{step_name}_L{logic_level}", wait_time=0)
-                await asyncio.sleep(3) 
+                # 🔥 WAIT AFTER CLICK (Let Page Load)
+                log_msg("⏳ Page Loading...")
+                await asyncio.sleep(5) 
                 
-                if await success_check().count() > 0: return True
+                # Check Result
+                if await success_check().count() > 0:
+                    return True
             else:
-                if logic_level == 1: log_msg(f"⏳ Searching {step_name}...")
-                await asyncio.sleep(2)
+                log_msg(f"⚠️ {step_name} not found yet...")
         except Exception: pass
     
     log_msg(f"❌ Failed: {step_name}")
@@ -239,9 +241,6 @@ async def master_loop():
             log_msg("ℹ️ No Numbers."); BOT_RUNNING = False; break
             
         proxy_cfg = get_strict_proxy()
-        if not proxy_cfg:
-            log_msg("⛔ Proxy Invalid."); BOT_RUNNING = False; break
-            
         p_show = proxy_cfg['server']
         log_msg(f"🔵 Processing: {current_number} | Proxy: {p_show}")
         
@@ -274,8 +273,12 @@ async def run_session(phone, country, proxy):
             log_msg("🌐 Loading...")
             try:
                 if not BOT_RUNNING: return "stopped"
-                await page.goto(BASE_URL, timeout=45000) 
-                await capture_step(page, "01_Loaded", wait_time=2)
+                await page.goto(BASE_URL, timeout=60000) 
+                
+                # 🔥 INITIAL 5 SEC WAIT FOR ICONS 🔥
+                log_msg("⏳ Stabilizing Page (5s)...")
+                await asyncio.sleep(5) 
+                await capture_step(page, "01_Loaded", wait_time=0)
 
                 # 1. REGISTER
                 if not await secure_step(
@@ -313,16 +316,14 @@ async def run_session(phone, country, proxy):
                     "UsePhone"
                 ): await browser.close(); return "retry"
 
-                # 5. COUNTRY SWITCH (FIXED: Target Text "(Chi" or "Hong Kong")
+                # 5. COUNTRY SWITCH
                 log_msg(f"🌍 Selecting {country}...")
                 
-                # 🔥 TARGET THE DEFAULT VALUE TEXT 🔥
-                # This finds "(China" or "Hong Kong" or "Country/Region"
                 list_opener = lambda: page.get_by_text("(Chi", exact=False).or_(page.get_by_text("Hong Kong", exact=False)).or_(page.get_by_text("Country/Region", exact=True))
                 
                 list_opened = await secure_step(
                     page,
-                    list_opener, # This will try finding text and clicking it (Center/Right logic auto-applies)
+                    list_opener,
                     lambda: page.get_by_placeholder("Search", exact=False),
                     "Open_Country_List"
                 )
@@ -330,22 +331,21 @@ async def run_session(phone, country, proxy):
                 if not list_opened:
                     log_msg("⚠️ Blind Tap Fallback...")
                     await page.touchscreen.tap(380, 200)
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(3)
                     if await page.get_by_placeholder("Search", exact=False).count() == 0:
                         log_msg("❌ List Open Failed")
                         await browser.close(); return "retry"
 
-                # Search & Select
                 search = page.get_by_placeholder("Search", exact=False).first
                 await search.click()
                 await page.keyboard.type(country, delay=50)
-                await capture_step(page, "04_Typed", wait_time=2) 
+                await asyncio.sleep(2)
                 
                 matches = page.get_by_text(country, exact=False)
                 if await matches.count() > 1: await execute_click_strategy(page, matches.nth(1), 1, "Result")
                 elif await matches.count() == 1: await execute_click_strategy(page, matches.first, 1, "Result")
                 else: log_msg(f"❌ Country Not Found"); await browser.close(); return "retry"
-                await capture_step(page, "05_Selected", wait_time=1)
+                await asyncio.sleep(3)
 
                 # 6. INPUT
                 inp = page.locator("input[type='tel']").first
@@ -366,7 +366,7 @@ async def run_session(phone, country, proxy):
                         "GET_CODE"
                     ): pass
 
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(3)
                     if await page.get_by_text("An unexpected problem", exact=False).count() > 0:
                         log_msg("⛔ FATAL: Not Supported")
                         await capture_step(page, "Error_Popup", wait_time=0)

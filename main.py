@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from playwright.async_api import async_playwright
 
 # --- 🔥 USER SETTINGS (CONTROL CENTER) 🔥 ---
-live_logs = True  # True = سب کچھ پرنٹ ہوگا | False = صرف اہم (Processing, Success, Error)
+live_logs = True  # True = All Logs | False = Only Important
 
 # --- HARDCODED SCRAPER API ---
 SCRAPER_API_KEY = '9643e678c2fa6efe4d2c7cf7b2206be0'
@@ -42,13 +42,8 @@ logs = []
 
 # --- 🔥 SMART LOGGER 🔥 ---
 def log_msg(message, level="step"):
-    """
-    level="main": ہمیشہ پرنٹ ہوگا (Processing, Success, Error, Captcha)
-    level="step": تبھی پرنٹ ہوگا جب live_logs = True ہو
-    """
     if level == "step" and not live_logs:
         return
-
     timestamp = datetime.now().strftime("%H:%M:%S")
     entry = f"[{timestamp}] {message}"
     print(entry)
@@ -103,7 +98,6 @@ async def get_status():
     files = sorted(glob.glob(f'{CAPTURE_DIR}/*.jpg'), key=os.path.getmtime, reverse=True)[:10]
     images = [f"/captures/{os.path.basename(f)}" for f in files]
     
-    # Proxy Display Check
     p_check = get_strict_proxy()
     p_disp = p_check['server'] if p_check else "❌ No Proxy"
     
@@ -261,7 +255,6 @@ async def secure_step(page, finder_func, success_check, step_name, checkbox_find
 async def master_loop():
     global BOT_RUNNING
     
-    # Auto Proxy Check (Uses ScraperAPI if nothing else)
     if not get_strict_proxy():
         log_msg("⛔ FATAL: No Proxy & ScraperAPI Failed!", level="main")
         BOT_RUNNING = False; return
@@ -277,7 +270,7 @@ async def master_loop():
         p_show = proxy_cfg['server']
         
         log_msg(f"🔵 Processing: {current_number}", level="main") 
-        log_msg(f"🌍 Proxy: {p_show}", level="step") # Detailed log
+        log_msg(f"🌍 Proxy: {p_show}", level="step") 
         
         try:
             res = await run_session(current_number, SETTINGS["country"], proxy_cfg)
@@ -291,7 +284,17 @@ async def master_loop():
 async def run_session(phone, country, proxy):
     try:
         async with async_playwright() as p:
-            launch_args = {"headless": True, "args": ["--disable-blink-features=AutomationControlled", "--no-sandbox"]}
+            # 🔥 CRITICAL FIXES FOR SSL ERRORS 🔥
+            launch_args = {
+                "headless": True, 
+                "args": [
+                    "--disable-blink-features=AutomationControlled", 
+                    "--no-sandbox",
+                    "--ignore-certificate-errors", # Ignore SSL
+                    "--ignore-ssl-errors",         # Ignore SSL
+                    "--disable-web-security"       # Allow non-secure content
+                ]
+            }
             launch_args["proxy"] = proxy 
 
             log_msg("🚀 Launching Browser...", level="step")
@@ -302,7 +305,12 @@ async def run_session(phone, country, proxy):
             pixel_5['viewport'] = {'width': 412, 'height': 950}
             pixel_5['has_touch'] = True 
             
-            context = await browser.new_context(**pixel_5, locale="en-US")
+            # 🔥 IGNORE HTTPS ERRORS IN CONTEXT 🔥
+            context = await browser.new_context(
+                **pixel_5, 
+                locale="en-US",
+                ignore_https_errors=True 
+            )
             page = await context.new_page()
 
             log_msg("🌐 Loading...", level="step")

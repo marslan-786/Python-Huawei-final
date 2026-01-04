@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from playwright.async_api import async_playwright
 
 # --- 🔥 USER SETTINGS (CONTROL CENTER) 🔥 ---
-live_logs = True  # True = سب کچھ | False = صرف اہم
+live_logs = False  # True = سب کچھ | False = صرف اہم
 
 # --- 🔥 HARDCODED SCRAPER API (RESIDENTIAL MODE) 🔥 ---
 API_KEY = '9643e678c2fa6efe4d2c7cf7b2206be0'

@@ -319,7 +319,7 @@ async def run_session(phone, country, proxy):
                 # 5. COUNTRY SWITCH
                 log_msg(f"🌍 Selecting {country}...")
                 
-                list_opener = lambda: page.get_by_text("(Chi", exact=False).or_(page.get_by_text("Hong Kong", exact=False)).or_(page.get_by_text("Country/Region", exact=True))
+                list_opener = lambda: page.get_by_text("(Chi...", exact=False).or_(page.get_by_text("Hong Kong", exact=False)).or_(page.get_by_text("Country/Region", exact=True))
                 
                 list_opened = await secure_step(
                     page,

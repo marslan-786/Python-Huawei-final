@@ -20,6 +20,10 @@ NUMBERS_FILE = "numbers.txt"
 PROXY_FILE = "proxies.txt"
 BASE_URL = "https://id5.cloud.huawei.com"
 
+# --- HARDCODED SCRAPER API ---
+SCRAPER_API_KEY = '9643e678c2fa6efe4d2c7cf7b2206be0'
+SCRAPER_PROXY_URL = f"http://scraperapi:{SCRAPER_API_KEY}@proxy-server.scraperapi.com:8001"
+
 if not os.path.exists(CAPTURE_DIR): os.makedirs(CAPTURE_DIR)
 app.mount("/captures", StaticFiles(directory=CAPTURE_DIR), name="captures")
 
@@ -28,11 +32,18 @@ try:
 except ImportError:
     async def solve_captcha(page, session_id, logger=print): return False
 
-SETTINGS = {"country": "Russia", "proxy_manual": ""}
+SETTINGS = {"country": "Russia", "proxy_manual": "", "verbose_logging": True}
 BOT_RUNNING = False
 logs = []
 
-def log_msg(message):
+# --- SMART LOGGER ---
+def log_msg(message, level="info"):
+    """
+    level: 'info' (Always show), 'debug' (Only if verbose is True)
+    """
+    if level == "debug" and not SETTINGS["verbose_logging"]:
+        return
+
     timestamp = datetime.now().strftime("%H:%M:%S")
     entry = f"[{timestamp}] {message}"
     print(entry)
@@ -56,15 +67,21 @@ def parse_proxy_string(proxy_str):
     except: return None
 
 def get_strict_proxy():
+    # 1. Manual Proxy
     if SETTINGS["proxy_manual"] and len(SETTINGS["proxy_manual"]) > 5:
         return parse_proxy_string(SETTINGS["proxy_manual"])
+    
+    # 2. File Proxy
     if os.path.exists(PROXY_FILE):
         try:
             with open(PROXY_FILE, 'r') as f:
                 lines = [l.strip() for l in f.readlines() if l.strip()]
             if lines: return parse_proxy_string(random.choice(lines))
         except: pass
-    return None
+    
+    # 3. 🔥 FALLBACK TO SCRAPER API 🔥
+    # log_msg("⚠️ No proxy found. Using ScraperAPI fallback.", level="info")
+    return parse_proxy_string(SCRAPER_PROXY_URL)
 
 def get_next_number():
     if os.path.exists(NUMBERS_FILE):
@@ -81,14 +98,20 @@ async def read_index(): return FileResponse('index.html')
 async def get_status():
     files = sorted(glob.glob(f'{CAPTURE_DIR}/*.jpg'), key=os.path.getmtime, reverse=True)[:10]
     images = [f"/captures/{os.path.basename(f)}" for f in files]
-    prox = get_strict_proxy()
-    p_disp = prox['server'] if prox else "❌ NO PROXY"
-    return JSONResponse({"logs": logs[:50], "images": images, "running": BOT_RUNNING, "current_country": SETTINGS["country"], "current_proxy": p_disp})
+    
+    # Check proxy just for display
+    # Don't call get_strict_proxy here to avoid log spam, just check settings
+    p_disp = "ScraperAPI (Default)"
+    if SETTINGS["proxy_manual"]: p_disp = "Manual"
+    elif os.path.exists(PROXY_FILE): p_disp = "File List"
+    
+    return JSONResponse({"logs": logs[:50], "images": images, "running": BOT_RUNNING, "current_country": SETTINGS["country"], "current_proxy": p_disp, "verbose": SETTINGS["verbose_logging"]})
 
 @app.post("/update_settings")
-async def update_settings(country: str = Form(...), manual_proxy: Optional[str] = Form("")):
+async def update_settings(country: str = Form(...), manual_proxy: Optional[str] = Form(""), verbose: bool = Form(True)):
     SETTINGS["country"] = country
     SETTINGS["proxy_manual"] = manual_proxy
+    SETTINGS["verbose_logging"] = verbose
     return {"status": "updated"}
 
 @app.post("/upload_proxies")
@@ -99,7 +122,7 @@ async def upload_proxies(file: UploadFile = File(...)):
 @app.post("/upload_numbers")
 async def upload_numbers(file: UploadFile = File(...)):
     with open(NUMBERS_FILE, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
-    log_msg(f"📂 Numbers File Uploaded")
+    log_msg(f"📂 Numbers File Uploaded", level="info")
     return {"status": "saved"}
 
 @app.post("/start")
@@ -114,8 +137,20 @@ async def start_bot(bt: BackgroundTasks):
 async def stop_bot():
     global BOT_RUNNING
     BOT_RUNNING = False
-    log_msg("🛑 STOP COMMAND RECEIVED.")
+    log_msg("🛑 STOP COMMAND RECEIVED.", level="info")
     return {"status": "stopping"}
+
+@app.post("/generate_video")
+async def trigger_video():
+    files = sorted(glob.glob(f'{CAPTURE_DIR}/*.jpg'))
+    if not files: return {"status": "error", "error": "No images"}
+    try:
+        with imageio.get_writer(VIDEO_PATH, fps=2, format='FFMPEG', quality=8) as writer:
+            for filename in files:
+                try: writer.append_data(imageio.imread(filename))
+                except: continue
+        return {"status": "done"}
+    except Exception as e: return {"status": "error", "error": str(e)}
 
 # --- VISUALS ---
 async def capture_step(page, step_name, wait_time=0):
@@ -154,25 +189,25 @@ async def execute_click_strategy(page, element, strategy_id, desc):
         ry = cy
 
         if strategy_id == 1:
-            log_msg(f"🔹 Logic 1 (Standard): {desc}")
+            log_msg(f"🔹 Logic 1 (Standard): {desc}", level="debug")
             await element.click(force=True, timeout=2000)
 
         elif strategy_id == 2:
-            log_msg(f"🔹 Logic 2 (JS Force): {desc}")
+            log_msg(f"🔹 Logic 2 (JS Force): {desc}", level="debug")
             await element.evaluate("e => e.click()")
 
         elif strategy_id == 3:
-            log_msg(f"🔹 Logic 3 (Tap Center): {desc}")
+            log_msg(f"🔹 Logic 3 (Tap Center): {desc}", level="debug")
             await show_red_dot(page, cx, cy)
             await page.touchscreen.tap(cx, cy)
 
         elif strategy_id == 4:
-            log_msg(f"🔹 Logic 4 (Tap Right): {desc}")
+            log_msg(f"🔹 Logic 4 (Tap Right): {desc}", level="debug")
             await show_red_dot(page, rx, ry)
             await page.touchscreen.tap(rx, ry)
 
         elif strategy_id == 5:
-            log_msg(f"🔹 Logic 5 (CDP Hammer): {desc}")
+            log_msg(f"🔹 Logic 5 (CDP Hammer): {desc}", level="debug")
             await show_red_dot(page, cx, cy)
             client = await page.context.new_cdp_session(page)
             await client.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [{"x": cx, "y": cy}]})
@@ -182,9 +217,8 @@ async def execute_click_strategy(page, element, strategy_id, desc):
         return True
     except: return False
 
-# --- 🔥 SECURE STEP WITH WAITS 🔥 ---
+# --- 🔥 SECURE STEP 🔥 ---
 async def secure_step(page, finder_func, success_check, step_name, checkbox_finder=None):
-    # Check if already done
     try:
         if await success_check().count() > 0: return True
     except: pass
@@ -192,8 +226,7 @@ async def secure_step(page, finder_func, success_check, step_name, checkbox_find
     for logic_level in range(1, 6):
         if not BOT_RUNNING: return False
         
-        # 🔥 WAIT BEFORE FINDING (Stabilize Page)
-        log_msg(f"⏳ Waiting for {step_name}...")
+        log_msg(f"⏳ Waiting for {step_name}...", level="debug")
         await asyncio.sleep(3) 
         
         try:
@@ -206,22 +239,20 @@ async def secure_step(page, finder_func, success_check, step_name, checkbox_find
                         await execute_click_strategy(page, cb.first, logic_level, "Checkbox")
                         await asyncio.sleep(1)
 
-                if logic_level > 1: log_msg(f"♻️ {step_name}: Logic {logic_level}...")
+                if logic_level > 1: log_msg(f"♻️ {step_name}: Logic {logic_level}...", level="debug")
                 
                 await execute_click_strategy(page, btn.first, logic_level, step_name)
                 
-                # 🔥 WAIT AFTER CLICK (Let Page Load)
-                log_msg("⏳ Page Loading...")
+                log_msg("⏳ Page Loading...", level="debug")
                 await asyncio.sleep(5) 
                 
-                # Check Result
                 if await success_check().count() > 0:
                     return True
             else:
-                log_msg(f"⚠️ {step_name} not found yet...")
+                log_msg(f"⚠️ {step_name} not found yet...", level="debug")
         except Exception: pass
     
-    log_msg(f"❌ Failed: {step_name}")
+    log_msg(f"❌ Failed: {step_name}", level="info") # Only ERROR is info
     await capture_step(page, f"Stuck_{step_name}", wait_time=0)
     return False
 
@@ -229,27 +260,29 @@ async def secure_step(page, finder_func, success_check, step_name, checkbox_find
 async def master_loop():
     global BOT_RUNNING
     
+    # Proxy Check (Auto-Fallback included)
     if not get_strict_proxy():
-        log_msg("⛔ FATAL: Proxy Required!")
+        log_msg("⛔ FATAL: No Proxy & ScraperAPI Failed!", level="info")
         BOT_RUNNING = False; return
 
-    log_msg("🟢 Worker Started.")
+    log_msg("🟢 Worker Started.", level="info")
     
     while BOT_RUNNING:
         current_number = get_next_number()
         if not current_number:
-            log_msg("ℹ️ No Numbers."); BOT_RUNNING = False; break
+            log_msg("ℹ️ No Numbers.", level="info"); BOT_RUNNING = False; break
             
         proxy_cfg = get_strict_proxy()
         p_show = proxy_cfg['server']
-        log_msg(f"🔵 Processing: {current_number} | Proxy: {p_show}")
+        log_msg(f"🔵 Processing: {current_number}", level="info") # ALWAYS SHOW
+        log_msg(f"🌍 Proxy: {p_show}", level="debug") # ONLY DEBUG SHOW
         
         try:
             res = await run_session(current_number, SETTINGS["country"], proxy_cfg)
-            if res == "success": log_msg("🎉 Verified!")
-            else: log_msg("❌ Failed.")
+            if res == "success": log_msg("🎉 Verified!", level="info")
+            else: log_msg("❌ Failed.", level="info")
         except Exception as e:
-            log_msg(f"🔥 Crash: {e}")
+            log_msg(f"🔥 Crash: {e}", level="info")
         
         await asyncio.sleep(2)
 
@@ -259,9 +292,9 @@ async def run_session(phone, country, proxy):
             launch_args = {"headless": True, "args": ["--disable-blink-features=AutomationControlled", "--no-sandbox"]}
             launch_args["proxy"] = proxy 
 
-            log_msg("🚀 Launching Browser...")
+            log_msg("🚀 Launching Browser...", level="debug")
             try: browser = await p.chromium.launch(**launch_args)
-            except Exception as e: log_msg(f"❌ Proxy Fail: {e}"); return "retry"
+            except Exception as e: log_msg(f"❌ Proxy Fail: {e}", level="info"); return "retry"
 
             pixel_5 = p.devices['Pixel 5'].copy()
             pixel_5['viewport'] = {'width': 412, 'height': 950}
@@ -270,13 +303,12 @@ async def run_session(phone, country, proxy):
             context = await browser.new_context(**pixel_5, locale="en-US")
             page = await context.new_page()
 
-            log_msg("🌐 Loading...")
+            log_msg("🌐 Loading...", level="debug")
             try:
                 if not BOT_RUNNING: return "stopped"
                 await page.goto(BASE_URL, timeout=60000) 
                 
-                # 🔥 INITIAL 5 SEC WAIT FOR ICONS 🔥
-                log_msg("⏳ Stabilizing Page (5s)...")
+                log_msg("⏳ Stabilizing Page (5s)...", level="debug")
                 await asyncio.sleep(5) 
                 await capture_step(page, "01_Loaded", wait_time=0)
 
@@ -317,10 +349,10 @@ async def run_session(phone, country, proxy):
                 ): await browser.close(); return "retry"
 
                 # 5. COUNTRY SWITCH
-                log_msg(f"🌍 Selecting {country}...")
+                log_msg(f"🌍 Selecting {country}...", level="debug")
                 
-                list_opener = lambda: page.get_by_text("Hong Kong", exact=False)
-               
+                list_opener = lambda: page.get_by_text("(Chi", exact=False).or_(page.get_by_text("Hong Kong", exact=False)).or_(page.get_by_text("Country/Region", exact=True))
+                
                 list_opened = await secure_step(
                     page,
                     list_opener,
@@ -329,22 +361,22 @@ async def run_session(phone, country, proxy):
                 )
                 
                 if not list_opened:
-                    log_msg("⚠️ Blind Tap Fallback...")
+                    log_msg("⚠️ Blind Tap Fallback...", level="debug")
                     await page.touchscreen.tap(380, 200)
                     await asyncio.sleep(3)
                     if await page.get_by_placeholder("Search", exact=False).count() == 0:
-                        log_msg("❌ List Open Failed")
+                        log_msg("❌ List Open Failed", level="info")
                         await browser.close(); return "retry"
 
                 search = page.get_by_placeholder("Search", exact=False).first
                 await search.click()
                 await page.keyboard.type(country, delay=50)
-                await asyncio.sleep(2)
+                await capture_step(page, "04_Typed", wait_time=2) 
                 
                 matches = page.get_by_text(country, exact=False)
                 if await matches.count() > 1: await execute_click_strategy(page, matches.nth(1), 1, "Result")
                 elif await matches.count() == 1: await execute_click_strategy(page, matches.first, 1, "Result")
-                else: log_msg(f"❌ Country Not Found"); await browser.close(); return "retry"
+                else: log_msg(f"❌ Country Not Found", level="info"); await browser.close(); return "retry"
                 await asyncio.sleep(3)
 
                 # 6. INPUT
@@ -352,7 +384,7 @@ async def run_session(phone, country, proxy):
                 if await inp.count() == 0: inp = page.locator("input").first
                 
                 if await inp.count() > 0:
-                    log_msg("🔢 Inputting Phone...")
+                    log_msg("🔢 Inputting Phone...", level="debug")
                     await inp.click()
                     for c in phone:
                         if not BOT_RUNNING: return "stopped"
@@ -368,40 +400,40 @@ async def run_session(phone, country, proxy):
 
                     await asyncio.sleep(3)
                     if await page.get_by_text("An unexpected problem", exact=False).count() > 0:
-                        log_msg("⛔ FATAL: Not Supported")
+                        log_msg("⛔ FATAL: Not Supported", level="info")
                         await capture_step(page, "Error_Popup", wait_time=0)
                         await browser.close(); return "skipped"
 
-                    log_msg("⏳ Checking Captcha...")
+                    log_msg("⏳ Checking Captcha...", level="info")
                     start_time = time.time()
                     while BOT_RUNNING:
                         if time.time() - start_time > 60:
-                            log_msg("⏰ Timeout"); await browser.close(); return "retry"
+                            log_msg("⏰ Timeout", level="info"); await browser.close(); return "retry"
 
                         if await page.get_by_text("swap 2 tiles", exact=False).count() > 0:
-                            log_msg("🧩 CAPTCHA FOUND!")
+                            log_msg("🧩 CAPTCHA FOUND!", level="info")
                             await asyncio.sleep(5) 
                             
                             session_id = f"sess_{int(time.time())}"
-                            ai_success = await solve_captcha(page, session_id, logger=log_msg)
+                            ai_success = await solve_captcha(page, session_id, logger=lambda m: log_msg(m, level="debug"))
                             
                             if not ai_success: await browser.close(); return "retry"
                             
                             await asyncio.sleep(5)
                             
                             if await page.get_by_text("swap 2 tiles", exact=False).count() == 0:
-                                log_msg("✅ SUCCESS!")
+                                log_msg("✅ SUCCESS!", level="info")
                                 await capture_step(page, "Success", wait_time=1)
                                 await browser.close(); return "success"
                             else:
-                                log_msg("🔁 Retry Captcha..."); await asyncio.sleep(2); continue
+                                log_msg("🔁 Retry Captcha...", level="info"); await asyncio.sleep(2); continue
                         else:
                             await asyncio.sleep(1)
                 
                 await browser.close(); return "retry"
 
             except Exception as e:
-                log_msg(f"❌ Session Error: {str(e)}"); await browser.close(); return "retry"
+                log_msg(f"❌ Session Error: {str(e)}", level="info"); await browser.close(); return "retry"
                 
     except Exception as launch_e:
-        log_msg(f"❌ LAUNCH ERROR: {launch_e}"); return "retry"
+        log_msg(f"❌ LAUNCH ERROR: {launch_e}", level="info"); return "retry"

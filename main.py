@@ -2,19 +2,15 @@ import os
 import glob
 import asyncio
 import random
-import string
-import shutil
 import cv2  # 🔥 OpenCV
 import numpy as np
-from rembg import remove # 🔥 Model 1 (AI)
+from rembg import remove
 from datetime import datetime
-from typing import Optional
-from urllib.parse import urlparse
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from playwright.async_api import async_playwright
-import uvicorn # For Railway
+import uvicorn
 
 # --- 🔥 CONFIGURATION 🔥 ---
 CAPTURE_DIR = "./captures"
@@ -22,7 +18,7 @@ NUMBERS_FILE = "numbers.txt"
 SUCCESS_FILE = "success.txt"
 FAILED_FILE = "failed.txt"
 PROXY_FILE = "proxies.txt"
-BASE_URL = "https://id8.cloud.huawei.com/" 
+BASE_URL = "https://id1.cloud.huawei.com/CAS/portal/login.html" 
 
 app = FastAPI()
 if not os.path.exists(CAPTURE_DIR): os.makedirs(CAPTURE_DIR)
@@ -36,22 +32,18 @@ PROXY_INDEX = 0
 
 # --- HELPERS ---
 def log_msg(message, level="step"):
-    if level == "step" and not True: return # live_logs hardcoded
     timestamp = datetime.now().strftime("%H:%M:%S")
     entry = f"[{timestamp}] {message}"
     print(entry)
     logs.insert(0, entry)
     if len(logs) > 500: logs.pop()
 
-# 🔥 FIXED: Yeh function pehle ghalat tha, ab theek hai
 def count_file_lines(filepath):
     if not os.path.exists(filepath): return 0
     try:
-        with open(filepath, "r") as f:
-            return len([l for l in f.readlines() if l.strip()])
+        with open(filepath, "r") as f: return len([l for l in f.readlines() if l.strip()])
     except: return 0
 
-# --- FILE MANAGERS ---
 def get_current_number_from_file():
     if os.path.exists(NUMBERS_FILE):
         with open(NUMBERS_FILE, "r") as f: lines = [l.strip() for l in f.readlines() if l.strip()]
@@ -67,7 +59,21 @@ def remove_current_number():
 def save_to_file(filename, data):
     with open(filename, "a") as f: f.write(f"{data}\n")
 
-# --- PROXY ---
+def get_current_proxy():
+    global PROXY_INDEX
+    if SETTINGS["proxy_manual"] and len(SETTINGS["proxy_manual"]) > 5:
+        return parse_proxy_string(SETTINGS["proxy_manual"])
+    if os.path.exists(PROXY_FILE):
+        try:
+            with open(PROXY_FILE, 'r') as f:
+                lines = [l.strip() for l in f.readlines() if l.strip()]
+            if lines:
+                if PROXY_INDEX >= len(lines): PROXY_INDEX = 0
+                selected = lines[PROXY_INDEX]; PROXY_INDEX += 1
+                return parse_proxy_string(selected)
+        except: pass
+    return None
+
 def parse_proxy_string(proxy_str):
     if not proxy_str or len(proxy_str) < 5: return None
     p = proxy_str.strip()
@@ -83,46 +89,9 @@ def parse_proxy_string(proxy_str):
         return cfg
     except: return None
 
-def get_current_proxy():
-    global PROXY_INDEX
-    if SETTINGS["proxy_manual"] and len(SETTINGS["proxy_manual"]) > 5:
-        return parse_proxy_string(SETTINGS["proxy_manual"])
-    if os.path.exists(PROXY_FILE):
-        try:
-            with open(PROXY_FILE, 'r') as f:
-                lines = [l.strip() for l in f.readlines() if l.strip()]
-            if lines:
-                if PROXY_INDEX >= len(lines): PROXY_INDEX = 0
-                selected = lines[PROXY_INDEX]
-                PROXY_INDEX += 1
-                return parse_proxy_string(selected)
-        except: pass
-    return None
-
 # --- API ---
 @app.get("/")
 async def read_index(): return FileResponse('index.html')
-
-@app.get("/download/{file_type}")
-async def download_file(file_type: str):
-    target_file = None
-    if file_type == "numbers": target_file = NUMBERS_FILE
-    elif file_type == "success": target_file = SUCCESS_FILE
-    elif file_type == "failed": target_file = FAILED_FILE
-    if target_file and os.path.exists(target_file): return FileResponse(target_file, filename=target_file, media_type='text/plain')
-    return {"error": "File not found"}
-
-@app.post("/clear_all")
-async def clear_all_data():
-    global logs; logs = []
-    open(NUMBERS_FILE, 'w').close()
-    log_msg("🗑️ System & Numbers Cleared.", level="main")
-    return {"status": "cleared"}
-
-@app.post("/clear_proxies")
-async def clear_proxies_api():
-    SETTINGS["proxy_manual"] = ""; open(PROXY_FILE, 'w').close()
-    return {"status": "proxies_cleared"}
 
 @app.get("/status")
 async def get_status():
@@ -138,12 +107,6 @@ async def update_settings(country: str = Form(...), manual_proxy: Optional[str] 
     SETTINGS["country"] = country; SETTINGS["proxy_manual"] = manual_proxy
     return {"status": "updated"}
 
-@app.post("/upload_proxies")
-async def upload_proxies(file: UploadFile = File(...)):
-    with open(PROXY_FILE, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
-    return {"status": "saved"}
-
-# 🔥 FIXED: Log message added back so you can see it works
 @app.post("/upload_numbers")
 async def upload_numbers(file: UploadFile = File(...)):
     with open(NUMBERS_FILE, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
@@ -162,13 +125,13 @@ async def stop_bot():
     log_msg("🛑 STOP COMMAND RECEIVED.", level="main")
     return {"status": "stopping"}
 
-# --- VISUALS & HELPERS ---
+# --- VISUALS ---
 async def capture_step(page, step_name, wait_time=0):
     if not BOT_RUNNING: return
     if wait_time > 0: await asyncio.sleep(wait_time)
-    timestamp = datetime.now().strftime("%H%M%S")
+    ts = datetime.now().strftime("%H%M%S")
     rnd = random.randint(10,99)
-    filename = f"{CAPTURE_DIR}/{timestamp}_{step_name}_{rnd}.jpg"
+    filename = f"{CAPTURE_DIR}/{ts}_{step_name}_{rnd}.jpg"
     try: await page.screenshot(path=filename)
     except: pass
 
@@ -186,37 +149,84 @@ async def show_red_dot(page, x, y):
         """)
     except: pass
 
-# --- 🔥 DEBUG SOLVER (SAVES BOX IMAGES) 🔥 ---
-def solve_puzzle_debug(image_path, attempt_id):
+# --- 🔥 DUAL-ENGINE SOLVER (AI + TEMPLATE MATCHING) 🔥 ---
+def solve_puzzle_smart(image_path, attempt_id):
     try:
         with open(image_path, "rb") as i: img_bytes = i.read()
         nparr = np.frombuffer(img_bytes, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if img is None: return 0
         
-        # 1. REMBG AI
-        output_data = remove(img_bytes)
-        nparr_ai = np.frombuffer(output_data, np.uint8)
-        img_ai = cv2.imdecode(nparr_ai, cv2.IMREAD_UNCHANGED)
-        
         best_x = 0
-        
-        if img_ai.shape[2] == 4:
-            alpha = img_ai[:, :, 3]
-            contours, _ = cv2.findContours(alpha, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        method_used = "None"
+
+        # --- ENGINE 1: REMBG AI (Improved Filter) ---
+        try:
+            output_data = remove(img_bytes)
+            nparr_ai = np.frombuffer(output_data, np.uint8)
+            img_ai = cv2.imdecode(nparr_ai, cv2.IMREAD_UNCHANGED)
             
-            for contour in contours:
-                x, y, w, h = cv2.boundingRect(contour)
-                # Huawei Hole Size Logic (30-80px) & Not at Start (x>50)
-                if w > 30 and h > 30 and x > 50:
-                    best_x = x
-                    # 🔥 DRAW DEBUG BOX 🔥
-                    cv2.rectangle(img, (x, y), (x+w, y+h), (0, 255, 0), 2)
-                    cv2.imwrite(f"{CAPTURE_DIR}/DEBUG_Try{attempt_id}_Found.jpg", img)
-                    log_msg(f"📸 Debug Saved: DEBUG_Try{attempt_id}_Found.jpg", level="step")
-                    break 
+            if img_ai.shape[2] == 4:
+                alpha = img_ai[:, :, 3]
+                contours, _ = cv2.findContours(alpha, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                
+                # Sort contours by area (Largest first)
+                contours = sorted(contours, key=cv2.contourArea, reverse=True)
+                
+                for contour in contours:
+                    x, y, w, h = cv2.boundingRect(contour)
+                    
+                    # 🔥 SQUARE FILTER (Crucial for Boats/Cars) 🔥
+                    aspect_ratio = float(w) / h
+                    # Accept if Aspect Ratio is between 0.8 and 1.2 (Square-ish)
+                    # And size is reasonable (30-85px)
+                    if 30 < w < 85 and 30 < h < 85 and x > 60:
+                        if 0.8 <= aspect_ratio <= 1.3: # Strict Square Check
+                            best_x = x
+                            method_used = "AI_Square_Lock"
+                            cv2.rectangle(img, (x, y), (x+w, y+h), (0, 255, 0), 2)
+                            break
+        except: pass
+
+        # --- ENGINE 2: TEMPLATE MATCHING (Backup if AI fails) ---
+        if best_x == 0:
+            try:
+                # Crop the "Piece" (Left side of image, usually 0-60px width)
+                # We assume the piece is vertically centered roughly
+                h, w, _ = img.shape
+                # Crop a vertical strip from left where the piece sits
+                piece_crop = img[0:h, 0:60]
+                
+                # Canny Edge on both
+                gray_full = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                gray_piece = cv2.cvtColor(piece_crop, cv2.COLOR_BGR2GRAY)
+                
+                edges_full = cv2.Canny(gray_full, 100, 200)
+                edges_piece = cv2.Canny(gray_piece, 100, 200)
+                
+                # Since we don't have the isolated piece, we try to match "holes"
+                # using basic thresholding on the rest of the image
+                _, thresh = cv2.threshold(gray_full, 50, 255, cv2.THRESH_BINARY_INV)
+                
+                # Scan for square holes in threshold
+                contours, _ = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+                for contour in contours:
+                    x, y, w, h = cv2.boundingRect(contour)
+                    ar = float(w)/h
+                    if 35 < w < 85 and 35 < h < 85 and x > 60 and 0.8 <= ar <= 1.2:
+                        best_x = x
+                        method_used = "Threshold_Square"
+                        cv2.rectangle(img, (x, y), (x+w, y+h), (0, 0, 255), 2) # Red box for backup
+                        break
+            except: pass
+
+        # Save Debug Image
+        cv2.putText(img, f"Method: {method_used} X:{best_x}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+        cv2.imwrite(f"{CAPTURE_DIR}/DEBUG_Try{attempt_id}_{method_used}.jpg", img)
+        log_msg(f"📸 Debug: {method_used} -> {best_x}px", level="step")
         
         return best_x
+
     except Exception as e:
         log_msg(f"Solver Error: {e}", level="step"); return 0
 
@@ -229,7 +239,6 @@ async def execute_click_strategy(page, element, strategy_id, desc):
         cx = box['x'] + box['width'] / 2; cy = box['y'] + box['height'] / 2
         await show_red_dot(page, cx, cy)
         await capture_step(page, f"Target_{desc}", wait_time=0.2)
-        log_msg(f"🖱️ Clicking: {desc}", level="step")
         await element.click()
         return True
     except: return False
@@ -283,7 +292,7 @@ async def run_huawei_session(phone, proxy):
             launch_args = { "headless": True, "args": ["--disable-blink-features=AutomationControlled", "--no-sandbox", "--ignore-certificate-errors", "--window-size=1920,1080"] }
             if proxy: launch_args["proxy"] = proxy 
 
-            log_msg("🚀 Launching Heavy AI Bot...", level="step")
+            log_msg("🚀 Launching Hybrid AI Bot...", level="step")
             try: browser = await p.chromium.launch(**launch_args)
             except Exception as e: log_msg(f"❌ Proxy Fail: {e}", level="main"); return "retry"
 
@@ -297,7 +306,6 @@ async def run_huawei_session(phone, proxy):
                 await page.goto(BASE_URL, timeout=60000) 
                 await asyncio.sleep(5) 
                 
-                # Reg Flow
                 reg_btn = page.get_by_text("Register", exact=True).or_(page.get_by_text("Sign up", exact=True))
                 if await reg_btn.count() > 0: await execute_click_strategy(page, reg_btn.first, 1, "Register_Link")
                 else: log_msg("❌ Reg btn missing", level="main"); return "retry"
@@ -314,14 +322,12 @@ async def run_huawei_session(phone, proxy):
                     await phone_input.click(); await page.keyboard.type(final_phone, delay=100)
                 else: return "retry"
 
-                # Get Code
                 get_code_btn = page.get_by_text("Get code", exact=True)
                 if await get_code_btn.count() > 0:
                     await execute_click_strategy(page, get_code_btn.first, 1, "Get_Code_Btn")
                     log_msg("⏳ Hard Wait: 10s for Initial Load...", level="step")
                     await asyncio.sleep(10)
                     
-                    # 🔥 LOOP 🔥
                     attempt_count = 0
                     while attempt_count < 5:
                         if not BOT_RUNNING: return "retry"
@@ -338,53 +344,51 @@ async def run_huawei_session(phone, proxy):
                                 await capture_step(page, f"Try_{attempt_count}_Start")
                                 await puzzle_img.screenshot(path="temp_puzzle.png")
                                 
-                                # 🔥 SCALE & SOLVE 🔥
+                                # Scale Calc
                                 box_img = await puzzle_img.bounding_box()
                                 actual_width = box_img['width']
                                 temp_img_cv = cv2.imread("temp_puzzle.png")
                                 raw_width = temp_img_cv.shape[1]
                                 scale_ratio = actual_width / raw_width
                                 
-                                # Use Debug Solver
-                                distance_raw = solve_puzzle_debug("temp_puzzle.png", attempt_count)
-                                log_msg(f"🧠 Raw: {distance_raw}px | Scale: {scale_ratio:.2f}", level="step")
+                                # 🔥 SMART SOLVE 🔥
+                                distance_raw = solve_puzzle_smart("temp_puzzle.png", attempt_count)
                                 
                                 if distance_raw > 0:
                                     distance = distance_raw * scale_ratio
-                                    log_msg(f"📏 Moving Slider: {distance}px", level="step")
+                                    log_msg(f"🧠 AI Target: {distance:.2f}px", level="step")
                                     
                                     slider = page.locator(".geetest_slider_button").or_(page.locator(".nc_iconfont.btn_slide")).or_(page.locator(".yidun_slider"))
                                     if await slider.count() > 0:
                                         box = await slider.bounding_box()
-                                        if box:
-                                            start_x = box['x'] + box['width'] / 2; start_y = box['y'] + box['height'] / 2
-                                            await page.mouse.move(start_x, start_y); await page.mouse.down()
-                                            
-                                            target_x = start_x + distance
-                                            steps = 15
-                                            for i in range(steps):
-                                                move_x = start_x + (distance * (i / steps))
-                                                move_y = start_y + random.randint(-5, 5) 
-                                                await page.mouse.move(move_x, move_y)
-                                                if i == 7: await show_red_dot(page, move_x, move_y)
-                                                await asyncio.sleep(0.02)
+                                        start_x = box['x'] + box['width'] / 2; start_y = box['y'] + box['height'] / 2
+                                        await page.mouse.move(start_x, start_y); await page.mouse.down()
+                                        
+                                        target_x = start_x + distance
+                                        steps = 15
+                                        for i in range(steps):
+                                            move_x = start_x + (distance * (i / steps))
+                                            move_y = start_y + random.randint(-5, 5) 
+                                            await page.mouse.move(move_x, move_y)
+                                            if i == 7: await show_red_dot(page, move_x, move_y)
+                                            await asyncio.sleep(0.02)
 
-                                            await show_red_dot(page, target_x, start_y)
-                                            await page.mouse.move(target_x, start_y); await asyncio.sleep(0.5); await page.mouse.up()
-                                            
-                                            log_msg("🚀 Dropped! Verify Wait 10s...", level="step")
-                                            await asyncio.sleep(10)
-                                            continue 
+                                        await show_red_dot(page, target_x, start_y)
+                                        await page.mouse.move(target_x, start_y); await asyncio.sleep(0.5); await page.mouse.up()
+                                        
+                                        log_msg("🚀 Dropped! Verify Wait 10s...", level="step")
+                                        await asyncio.sleep(10)
+                                        continue 
+                                else:
+                                    log_msg("❌ AI found 0px target.", level="step")
                         else:
                             if await page.get_by_text("s", exact=False).count() > 0 or await page.get_by_text("sent", exact=False).count() > 0:
                                 log_msg("✅ SUCCESS! Code Sent.", level="main")
                                 await capture_step(page, "Success_Final")
                                 return "success"
                             else:
-                                log_msg("❌ Error: No Captcha & No Success.", level="main")
-                                await capture_step(page, "Error_Status")
+                                log_msg("❌ No Captcha & No Success.", level="main")
                                 return "captcha_fail"
-                    
                     return "captcha_fail"
                 else: return "retry"
             except Exception as e:

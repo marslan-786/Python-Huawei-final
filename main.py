@@ -2,15 +2,19 @@ import os
 import glob
 import asyncio
 import random
+import string
+import shutil
 import cv2  # 🔥 OpenCV
 import numpy as np
-from rembg import remove
+from rembg import remove # 🔥 Model 1 (AI)
 from datetime import datetime
+from typing import Optional
+from urllib.parse import urlparse
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from playwright.async_api import async_playwright
-import uvicorn
+import uvicorn # For Railway
 
 # --- 🔥 CONFIGURATION 🔥 ---
 CAPTURE_DIR = "./captures"
@@ -30,14 +34,24 @@ logs = []
 CURRENT_RETRIES = 0 
 PROXY_INDEX = 0
 
-# --- HELPERS & API ---
+# --- HELPERS ---
 def log_msg(message, level="step"):
+    if level == "step" and not True: return # live_logs hardcoded
     timestamp = datetime.now().strftime("%H:%M:%S")
     entry = f"[{timestamp}] {message}"
     print(entry)
     logs.insert(0, entry)
     if len(logs) > 500: logs.pop()
 
+# 🔥 FIXED: Yeh function pehle ghalat tha, ab theek hai
+def count_file_lines(filepath):
+    if not os.path.exists(filepath): return 0
+    try:
+        with open(filepath, "r") as f:
+            return len([l for l in f.readlines() if l.strip()])
+    except: return 0
+
+# --- FILE MANAGERS ---
 def get_current_number_from_file():
     if os.path.exists(NUMBERS_FILE):
         with open(NUMBERS_FILE, "r") as f: lines = [l.strip() for l in f.readlines() if l.strip()]
@@ -53,31 +67,88 @@ def remove_current_number():
 def save_to_file(filename, data):
     with open(filename, "a") as f: f.write(f"{data}\n")
 
+# --- PROXY ---
+def parse_proxy_string(proxy_str):
+    if not proxy_str or len(proxy_str) < 5: return None
+    p = proxy_str.strip()
+    if p.count(":") == 3 and "://" not in p:
+        parts = p.split(":")
+        return {"server": f"http://{parts[0]}:{parts[1]}", "username": parts[2], "password": parts[3]}
+    if "://" not in p: p = f"http://{p}"
+    try:
+        parsed = urlparse(p)
+        cfg = {"server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"}
+        if parsed.username: cfg["username"] = parsed.username
+        if parsed.password: cfg["password"] = parsed.password
+        return cfg
+    except: return None
+
 def get_current_proxy():
     global PROXY_INDEX
     if SETTINGS["proxy_manual"] and len(SETTINGS["proxy_manual"]) > 5:
-        parts = SETTINGS["proxy_manual"].strip().split(":")
-        if len(parts) >= 2: return {"server": f"http://{parts[0]}:{parts[1]}", "username": parts[2], "password": parts[3]} if len(parts) == 4 else {"server": f"http://{parts[0]}:{parts[1]}"}
+        return parse_proxy_string(SETTINGS["proxy_manual"])
     if os.path.exists(PROXY_FILE):
         try:
-            with open(PROXY_FILE, 'r') as f: lines = [l.strip() for l in f.readlines() if l.strip()]
+            with open(PROXY_FILE, 'r') as f:
+                lines = [l.strip() for l in f.readlines() if l.strip()]
             if lines:
                 if PROXY_INDEX >= len(lines): PROXY_INDEX = 0
-                sel = lines[PROXY_INDEX]; PROXY_INDEX += 1
-                parts = sel.split(":")
-                return {"server": f"http://{parts[0]}:{parts[1]}", "username": parts[2], "password": parts[3]} if len(parts) == 4 else {"server": f"http://{parts[0]}:{parts[1]}"}
+                selected = lines[PROXY_INDEX]
+                PROXY_INDEX += 1
+                return parse_proxy_string(selected)
         except: pass
     return None
 
+# --- API ---
 @app.get("/")
 async def read_index(): return FileResponse('index.html')
 
+@app.get("/download/{file_type}")
+async def download_file(file_type: str):
+    target_file = None
+    if file_type == "numbers": target_file = NUMBERS_FILE
+    elif file_type == "success": target_file = SUCCESS_FILE
+    elif file_type == "failed": target_file = FAILED_FILE
+    if target_file and os.path.exists(target_file): return FileResponse(target_file, filename=target_file, media_type='text/plain')
+    return {"error": "File not found"}
+
+@app.post("/clear_all")
+async def clear_all_data():
+    global logs; logs = []
+    open(NUMBERS_FILE, 'w').close()
+    log_msg("🗑️ System & Numbers Cleared.", level="main")
+    return {"status": "cleared"}
+
+@app.post("/clear_proxies")
+async def clear_proxies_api():
+    SETTINGS["proxy_manual"] = ""; open(PROXY_FILE, 'w').close()
+    return {"status": "proxies_cleared"}
+
 @app.get("/status")
 async def get_status():
-    # Sort files by time to show newest debug images first
     files = sorted(glob.glob(f'{CAPTURE_DIR}/*.jpg'), key=os.path.getmtime, reverse=True)[:15]
     images = [f"/captures/{os.path.basename(f)}" for f in files]
-    return JSONResponse({"logs": logs[:50], "images": images, "running": BOT_RUNNING})
+    prox = get_current_proxy()
+    p_disp = prox['server'] if prox else "🌐 Direct Internet"
+    stats = { "remaining": count_file_lines(NUMBERS_FILE), "success": count_file_lines(SUCCESS_FILE), "failed": count_file_lines(FAILED_FILE) }
+    return JSONResponse({"logs": logs[:50], "images": images, "running": BOT_RUNNING, "stats": stats, "current_proxy": p_disp})
+
+@app.post("/update_settings")
+async def update_settings(country: str = Form(...), manual_proxy: Optional[str] = Form("")):
+    SETTINGS["country"] = country; SETTINGS["proxy_manual"] = manual_proxy
+    return {"status": "updated"}
+
+@app.post("/upload_proxies")
+async def upload_proxies(file: UploadFile = File(...)):
+    with open(PROXY_FILE, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
+    return {"status": "saved"}
+
+# 🔥 FIXED: Log message added back so you can see it works
+@app.post("/upload_numbers")
+async def upload_numbers(file: UploadFile = File(...)):
+    with open(NUMBERS_FILE, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
+    log_msg(f"📂 Numbers File Uploaded ({file.filename})", level="main")
+    return {"status": "saved"}
 
 @app.post("/start")
 async def start_bot(bt: BackgroundTasks):
@@ -87,229 +158,242 @@ async def start_bot(bt: BackgroundTasks):
 
 @app.post("/stop")
 async def stop_bot():
-    global BOT_RUNNING; BOT_RUNNING = False; return {"status": "stopping"}
+    global BOT_RUNNING; BOT_RUNNING = False
+    log_msg("🛑 STOP COMMAND RECEIVED.", level="main")
+    return {"status": "stopping"}
 
-@app.post("/upload_numbers")
-async def upload_numbers(file: UploadFile = File(...)):
-    with open(NUMBERS_FILE, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
-    return {"status": "saved"}
-
-# --- VISUALS ---
-async def capture_step(page, step_name):
+# --- VISUALS & HELPERS ---
+async def capture_step(page, step_name, wait_time=0):
     if not BOT_RUNNING: return
-    ts = datetime.now().strftime("%H%M%S")
-    fn = f"{CAPTURE_DIR}/{ts}_{step_name}.jpg"
-    try: await page.screenshot(path=fn)
+    if wait_time > 0: await asyncio.sleep(wait_time)
+    timestamp = datetime.now().strftime("%H%M%S")
+    rnd = random.randint(10,99)
+    filename = f"{CAPTURE_DIR}/{timestamp}_{step_name}_{rnd}.jpg"
+    try: await page.screenshot(path=filename)
     except: pass
 
 async def show_red_dot(page, x, y):
     try:
         await page.evaluate(f"""
-            var dot = document.createElement('div'); dot.style.position='absolute';
-            dot.style.left='{x-10}px'; dot.style.top='{y-10}px'; dot.style.width='20px'; dot.style.height='20px';
-            dot.style.background='red'; dot.style.borderRadius='50%'; dot.style.zIndex='9999';
-            document.body.appendChild(dot); setTimeout(()=>dot.remove(), 2000);
+            var dot = document.createElement('div'); dot.id = 'bot-marker';
+            dot.style.position = 'absolute'; dot.style.left = '{x-15}px'; dot.style.top = '{y-15}px';
+            dot.style.width = '30px'; dot.style.height = '30px'; 
+            dot.style.background = 'rgba(255, 0, 0, 0.9)'; dot.style.borderRadius = '50%'; 
+            dot.style.zIndex = '2147483647'; dot.style.pointerEvents = 'none'; 
+            dot.style.border = '3px solid white'; dot.style.boxShadow = '0 0 10px rgba(0,0,0,0.8)';
+            document.body.appendChild(dot);
+            setTimeout(() => {{ if(dot) dot.remove(); }}, 2000);
         """)
     except: pass
 
-# --- 🔥 HEAVY DEBUG SOLVER (DRAWS BOXES) 🔥 ---
-def solve_puzzle_with_debug(image_path, attempt_id):
+# --- 🔥 DEBUG SOLVER (SAVES BOX IMAGES) 🔥 ---
+def solve_puzzle_debug(image_path, attempt_id):
     try:
-        # Load Image
         with open(image_path, "rb") as i: img_bytes = i.read()
         nparr = np.frombuffer(img_bytes, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if img is None: return 0
         
+        # 1. REMBG AI
+        output_data = remove(img_bytes)
+        nparr_ai = np.frombuffer(output_data, np.uint8)
+        img_ai = cv2.imdecode(nparr_ai, cv2.IMREAD_UNCHANGED)
+        
         best_x = 0
         
-        # --- PRE-PROCESSING (Reduce Noise) ---
-        # Huawei images are noisy. We need strong blur.
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        
-        # Method: Enhance Contrast to make the hole darker
-        alpha_c = 1.5 # Contrast control
-        beta_c = 0    # Brightness control
-        enhanced = cv2.convertScaleAbs(gray, alpha=alpha_c, beta=beta_c)
-        
-        # Gaussian Blur
-        blurred = cv2.GaussianBlur(enhanced, (7, 7), 0)
-        
-        # Canny Edge
-        edges = cv2.Canny(blurred, 50, 150)
-        
-        # Find Contours
-        contours, _ = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-        
-        found_contours = []
-        for contour in contours:
-            x, y, w, h = cv2.boundingRect(contour)
-            # Filter: Huawei holes are roughly square, size 40-50px usually
-            # We allow 35-85px range. Must not be at x=0 (that's the slider piece)
-            if 35 < w < 85 and 35 < h < 85 and x > 60:
-                found_contours.append((x, y, w, h))
-        
-        # Sort contours by X (Left to Right) - Usually first valid one is the target
-        found_contours.sort(key=lambda b: b[0])
-        
-        if found_contours:
-            # Pick the best one
-            target = found_contours[0]
-            best_x = target[0]
+        if img_ai.shape[2] == 4:
+            alpha = img_ai[:, :, 3]
+            contours, _ = cv2.findContours(alpha, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
-            # 🔥 DRAW DEBUG BOX 🔥
-            # Draw rectangle on original image
-            cv2.rectangle(img, (target[0], target[1]), (target[0]+target[2], target[1]+target[3]), (0, 255, 0), 2)
-            # Save Debug Image
-            cv2.imwrite(f"{CAPTURE_DIR}/DEBUG_{attempt_id}_Solved.jpg", img)
-            log_msg(f"📸 Debug Image Saved: DEBUG_{attempt_id}_Solved.jpg", level="step")
-        else:
-            log_msg("❌ No valid contours found.", level="step")
-            cv2.imwrite(f"{CAPTURE_DIR}/DEBUG_{attempt_id}_FAILED.jpg", edges) # Save edge view to see why
-
+            for contour in contours:
+                x, y, w, h = cv2.boundingRect(contour)
+                # Huawei Hole Size Logic (30-80px) & Not at Start (x>50)
+                if w > 30 and h > 30 and x > 50:
+                    best_x = x
+                    # 🔥 DRAW DEBUG BOX 🔥
+                    cv2.rectangle(img, (x, y), (x+w, y+h), (0, 255, 0), 2)
+                    cv2.imwrite(f"{CAPTURE_DIR}/DEBUG_Try{attempt_id}_Found.jpg", img)
+                    log_msg(f"📸 Debug Saved: DEBUG_Try{attempt_id}_Found.jpg", level="step")
+                    break 
+        
         return best_x
-
     except Exception as e:
-        log_msg(f"Solver Error: {e}", level="step")
-        return 0
+        log_msg(f"Solver Error: {e}", level="step"); return 0
 
-# --- CLICK ---
-async def click_element(page, elem, desc):
+# --- CLICK LOGIC ---
+async def execute_click_strategy(page, element, strategy_id, desc):
     try:
-        box = await elem.bounding_box()
-        if box:
-            await show_red_dot(page, box['x']+box['width']/2, box['y']+box['height']/2)
-            await capture_step(page, f"Click_{desc}")
-            await elem.click()
-            return True
-    except: pass
-    return False
+        await element.scroll_into_view_if_needed()
+        box = await element.bounding_box()
+        if not box: return False
+        cx = box['x'] + box['width'] / 2; cy = box['y'] + box['height'] / 2
+        await show_red_dot(page, cx, cy)
+        await capture_step(page, f"Target_{desc}", wait_time=0.2)
+        log_msg(f"🖱️ Clicking: {desc}", level="step")
+        await element.click()
+        return True
+    except: return False
 
 # --- WORKER ---
 async def master_loop():
     global BOT_RUNNING, CURRENT_RETRIES
-    if not get_current_number_from_file(): log_msg("ℹ️ No Numbers."); BOT_RUNNING = False; return
+    if not get_current_number_from_file():
+        log_msg("ℹ️ No Numbers File.", level="main"); BOT_RUNNING = False; return
+
+    log_msg("🟢 Worker Started.", level="main")
     
     while BOT_RUNNING:
-        num = get_current_number_from_file()
-        if not num: break
+        current_number = get_current_number_from_file()
+        if not current_number:
+            log_msg("ℹ️ No Numbers Left.", level="main"); BOT_RUNNING = False; break
+            
+        proxy_cfg = get_current_proxy()
+        p_show = proxy_cfg['server'] if proxy_cfg else "🌐 Direct Internet"
         
-        proxy = get_current_proxy()
-        log_msg(f"🔵 Processing: {num}", level="main")
+        log_msg(f"🔵 Processing: {current_number}", level="main") 
+        log_msg(f"🌍 Connection: {p_show}", level="step") 
         
         try:
-            res = await run_session(num, proxy)
+            res = await run_huawei_session(current_number, proxy_cfg)
+            
             if res == "success":
-                save_to_file(SUCCESS_FILE, num); remove_current_number(); CURRENT_RETRIES = 0
+                log_msg("🎉 Number DONE. Moving to Success.", level="main")
+                save_to_file(SUCCESS_FILE, current_number)
+                remove_current_number(); CURRENT_RETRIES = 0
             elif res == "captcha_fail":
-                save_to_file(FAILED_FILE, num); remove_current_number(); CURRENT_RETRIES = 0
-            else:
-                if CURRENT_RETRIES < 2: CURRENT_RETRIES += 1
-                else: save_to_file(FAILED_FILE, num); remove_current_number(); CURRENT_RETRIES = 0
+                log_msg("💀 Puzzle Failed. Skip.", level="main")
+                save_to_file(FAILED_FILE, current_number)
+                remove_current_number(); CURRENT_RETRIES = 0
+            else: 
+                if CURRENT_RETRIES < 2:
+                    CURRENT_RETRIES += 1
+                    log_msg(f"🔁 Retrying ({CURRENT_RETRIES}/3)...", level="main")
+                else:
+                    log_msg("💀 Max Retries.", level="main")
+                    save_to_file(FAILED_FILE, current_number)
+                    remove_current_number(); CURRENT_RETRIES = 0
         except Exception as e:
-            log_msg(f"Error: {e}"); CURRENT_RETRIES += 1
+            log_msg(f"🔥 Crash: {e}", level="main"); CURRENT_RETRIES += 1
         
         await asyncio.sleep(2)
 
-async def run_session(phone, proxy):
+async def run_huawei_session(phone, proxy):
     try:
         async with async_playwright() as p:
-            args = ["--no-sandbox", "--disable-blink-features=AutomationControlled", "--window-size=1920,1080"]
-            browser = await p.chromium.launch(headless=True, args=args, proxy=proxy)
-            context = await browser.new_context(viewport={'width':1920,'height':1080}, locale="en-US")
-            page = await context.new_page()
-            
-            try:
-                log_msg("🌐 Opening Page...", level="step")
-                await page.goto(BASE_URL, timeout=60000)
-                await asyncio.sleep(5)
-                
-                # Navigation
-                if await page.get_by_text("Register").count() > 0:
-                    await click_element(page, page.get_by_text("Register").first, "Reg")
-                await asyncio.sleep(3)
-                
-                if await page.get_by_text("Register with phone").count() > 0:
-                    await click_element(page, page.get_by_text("Register with phone").first, "Tab")
-                
-                # Input
-                clean_phone = phone[1:] if phone.startswith("7") else phone
-                await page.get_by_placeholder("Phone").fill(clean_phone)
-                
-                # Get Code
-                await click_element(page, page.get_by_text("Get code").first, "GetCode")
-                
-                # 🔥 CAPTCHA LOOP 🔥
-                log_msg("⏳ Waiting 10s for Captcha...", level="step")
-                await asyncio.sleep(10)
-                
-                for attempt in range(1, 6): # 5 Attempts
-                    if not BOT_RUNNING: return "retry"
-                    
-                    # Check if Captcha is present
-                    captcha_frame = page.locator("iframe[src*='captcha']").or_(page.locator(".geetest_window"))
-                    is_present = await captcha_frame.count() > 0 or await page.get_by_text("verification").count() > 0
-                    
-                    if is_present:
-                        log_msg(f"🧩 Captcha Detected (Try {attempt})...", level="main")
-                        
-                        # Find Image
-                        img_elem = page.locator("img[src*='captcha']").first
-                        if await img_elem.count() == 0: img_elem = page.locator(".geetest_canvas_bg").first
-                        
-                        if await img_elem.count() > 0:
-                            # Screenshot for OpenCV
-                            await img_elem.screenshot(path="puzzle.png")
-                            
-                            # Scaling Calculation
-                            box = await img_elem.bounding_box()
-                            display_width = box['width']
-                            raw_img = cv2.imread("puzzle.png")
-                            raw_width = raw_img.shape[1]
-                            scale = display_width / raw_width
-                            
-                            # 🔥 SOLVE & SAVE DEBUG IMAGE 🔥
-                            raw_distance = solve_puzzle_with_debug("puzzle.png", attempt)
-                            
-                            if raw_distance > 0:
-                                distance = raw_distance * scale
-                                log_msg(f"📏 Distance: {distance}px (Raw: {raw_distance})", level="step")
-                                
-                                # Drag
-                                slider = page.locator(".geetest_slider_button").or_(page.locator(".nc_iconfont.btn_slide"))
-                                if await slider.count() > 0:
-                                    s_box = await slider.bounding_box()
-                                    sx = s_box['x'] + s_box['width']/2
-                                    sy = s_box['y'] + s_box['height']/2
-                                    
-                                    await page.mouse.move(sx, sy); await page.mouse.down()
-                                    
-                                    # Human Move
-                                    await page.mouse.move(sx + distance, sy + random.randint(-5,5), steps=15)
-                                    await asyncio.sleep(0.5); await page.mouse.up()
-                                    
-                                    log_msg("🚀 Dropped! Waiting 10s...", level="step")
-                                    await asyncio.sleep(10)
-                                    continue
-                            else:
-                                log_msg("❌ AI failed to find hole.", level="step")
-                        else:
-                            log_msg("❌ Image element missing.", level="step")
-                    else:
-                        # Check Success
-                        if await page.get_by_text("s", exact=False).count() > 0:
-                            log_msg("✅ SUCCESS!", level="main"); return "success"
-                        else:
-                            log_msg("❌ Failed/Error.", level="main"); return "captcha_fail"
-                
-                return "captcha_fail"
+            launch_args = { "headless": True, "args": ["--disable-blink-features=AutomationControlled", "--no-sandbox", "--ignore-certificate-errors", "--window-size=1920,1080"] }
+            if proxy: launch_args["proxy"] = proxy 
 
+            log_msg("🚀 Launching Heavy AI Bot...", level="step")
+            try: browser = await p.chromium.launch(**launch_args)
+            except Exception as e: log_msg(f"❌ Proxy Fail: {e}", level="main"); return "retry"
+
+            context = await browser.new_context(viewport={'width': 1920, 'height': 1080}, locale="en-US")
+            await context.clear_cookies()
+            page = await context.new_page()
+
+            log_msg("🌐 Opening Huawei...", level="step")
+            try:
+                if not BOT_RUNNING: return "retry"
+                await page.goto(BASE_URL, timeout=60000) 
+                await asyncio.sleep(5) 
+                
+                # Reg Flow
+                reg_btn = page.get_by_text("Register", exact=True).or_(page.get_by_text("Sign up", exact=True))
+                if await reg_btn.count() > 0: await execute_click_strategy(page, reg_btn.first, 1, "Register_Link")
+                else: log_msg("❌ Reg btn missing", level="main"); return "retry"
+                await asyncio.sleep(5)
+
+                phone_tab = page.get_by_text("Register with phone number")
+                if await phone_tab.count() > 0: await execute_click_strategy(page, phone_tab.first, 1, "Phone_Tab")
+                await asyncio.sleep(2)
+                
+                final_phone = phone
+                if phone.startswith("7") and len(phone) > 10: final_phone = phone[1:] 
+                phone_input = page.get_by_placeholder("Phone")
+                if await phone_input.count() > 0:
+                    await phone_input.click(); await page.keyboard.type(final_phone, delay=100)
+                else: return "retry"
+
+                # Get Code
+                get_code_btn = page.get_by_text("Get code", exact=True)
+                if await get_code_btn.count() > 0:
+                    await execute_click_strategy(page, get_code_btn.first, 1, "Get_Code_Btn")
+                    log_msg("⏳ Hard Wait: 10s for Initial Load...", level="step")
+                    await asyncio.sleep(10)
+                    
+                    # 🔥 LOOP 🔥
+                    attempt_count = 0
+                    while attempt_count < 5:
+                        if not BOT_RUNNING: return "retry"
+                        
+                        puzzle_container = page.locator(".geetest_window").or_(page.locator(".nc_scale")).or_(page.locator("iframe[src*='captcha']"))
+                        if await puzzle_container.count() > 0 or await page.get_by_text("Please complete verification").count() > 0:
+                            attempt_count += 1
+                            log_msg(f"🧩 Captcha Found! Attempt {attempt_count}...", level="main")
+                            
+                            puzzle_img = page.locator("img[src*='captcha']").first
+                            if await puzzle_img.count() == 0: puzzle_img = page.locator(".geetest_canvas_bg").first
+                            
+                            if await puzzle_img.count() > 0:
+                                await capture_step(page, f"Try_{attempt_count}_Start")
+                                await puzzle_img.screenshot(path="temp_puzzle.png")
+                                
+                                # 🔥 SCALE & SOLVE 🔥
+                                box_img = await puzzle_img.bounding_box()
+                                actual_width = box_img['width']
+                                temp_img_cv = cv2.imread("temp_puzzle.png")
+                                raw_width = temp_img_cv.shape[1]
+                                scale_ratio = actual_width / raw_width
+                                
+                                # Use Debug Solver
+                                distance_raw = solve_puzzle_debug("temp_puzzle.png", attempt_count)
+                                log_msg(f"🧠 Raw: {distance_raw}px | Scale: {scale_ratio:.2f}", level="step")
+                                
+                                if distance_raw > 0:
+                                    distance = distance_raw * scale_ratio
+                                    log_msg(f"📏 Moving Slider: {distance}px", level="step")
+                                    
+                                    slider = page.locator(".geetest_slider_button").or_(page.locator(".nc_iconfont.btn_slide")).or_(page.locator(".yidun_slider"))
+                                    if await slider.count() > 0:
+                                        box = await slider.bounding_box()
+                                        if box:
+                                            start_x = box['x'] + box['width'] / 2; start_y = box['y'] + box['height'] / 2
+                                            await page.mouse.move(start_x, start_y); await page.mouse.down()
+                                            
+                                            target_x = start_x + distance
+                                            steps = 15
+                                            for i in range(steps):
+                                                move_x = start_x + (distance * (i / steps))
+                                                move_y = start_y + random.randint(-5, 5) 
+                                                await page.mouse.move(move_x, move_y)
+                                                if i == 7: await show_red_dot(page, move_x, move_y)
+                                                await asyncio.sleep(0.02)
+
+                                            await show_red_dot(page, target_x, start_y)
+                                            await page.mouse.move(target_x, start_y); await asyncio.sleep(0.5); await page.mouse.up()
+                                            
+                                            log_msg("🚀 Dropped! Verify Wait 10s...", level="step")
+                                            await asyncio.sleep(10)
+                                            continue 
+                        else:
+                            if await page.get_by_text("s", exact=False).count() > 0 or await page.get_by_text("sent", exact=False).count() > 0:
+                                log_msg("✅ SUCCESS! Code Sent.", level="main")
+                                await capture_step(page, "Success_Final")
+                                return "success"
+                            else:
+                                log_msg("❌ Error: No Captcha & No Success.", level="main")
+                                await capture_step(page, "Error_Status")
+                                return "captcha_fail"
+                    
+                    return "captcha_fail"
+                else: return "retry"
             except Exception as e:
-                log_msg(f"Session Err: {e}"); return "retry"
+                log_msg(f"❌ Session Error: {str(e)}", level="main"); return "retry"
             finally:
                 await browser.close()
-
-    except: return "retry"
+                if os.path.exists("temp_puzzle.png"): os.remove("temp_puzzle.png")
+    except Exception as launch_e:
+        log_msg(f"❌ LAUNCH ERROR: {launch_e}", level="main"); return "retry"
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))

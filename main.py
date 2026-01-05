@@ -5,8 +5,8 @@ import random
 import string
 import shutil
 import cv2  # 🔥 OpenCV
-import numpy as np # 🔥 Math
-from rembg import remove # 🔥 Heavy AI Background Remover
+import numpy as np
+from rembg import remove # 🔥 Model 1
 from datetime import datetime
 from typing import Optional
 from urllib.parse import urlparse
@@ -14,6 +14,7 @@ from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from playwright.async_api import async_playwright
+import uvicorn # For Railway Startup
 
 # --- 🔥 USER SETTINGS 🔥 ---
 live_logs = True 
@@ -24,7 +25,7 @@ NUMBERS_FILE = "numbers.txt"
 SUCCESS_FILE = "success.txt"
 FAILED_FILE = "failed.txt"
 PROXY_FILE = "proxies.txt"
-BASE_URL = "https://id8.cloud.huawei.com" 
+BASE_URL = "https://id8.cloud.huawei.com/" 
 
 # --- INITIALIZE ---
 app = FastAPI()
@@ -198,36 +199,80 @@ async def show_red_dot(page, x, y):
         """)
     except: pass
 
-# --- 🔥 HEAVY AI SOLVER (REMBG + OPENCV) 🔥 ---
-def solve_puzzle_heavy_ai(image_path):
-    try:
-        log_msg("🧠 AI Engine Started (Rembg U2-Net)...", level="step")
-        
-        with open(image_path, "rb") as i:
-            input_data = i.read()
-        
-        # AI Magic
-        output_data = remove(input_data)
-        nparr = np.frombuffer(output_data, np.uint8)
-        img_no_bg = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
-        
-        if img_no_bg.shape[2] == 4:
-            alpha = img_no_bg[:, :, 3]
-        else:
-            return 0
+# --- 🔥 WATERFALL STRATEGY (5 MODELS) 🔥 ---
 
-        contours, _ = cv2.findContours(alpha, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+def waterfall_solver(image_path, attempt_number):
+    try:
+        # Load Image
+        with open(image_path, "rb") as i: img_bytes = i.read()
+        nparr = np.frombuffer(img_bytes, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if img is None: return 0
+        
         best_x = 0
         
-        for contour in contours:
-            x, y, w, h = cv2.boundingRect(contour)
-            if w > 30 and h > 30 and x > 50:
-                best_x = x
-                log_msg(f"🎯 AI Found Target at X: {x} (w:{w}, h:{h})", level="step")
-                break 
+        # --- MODEL 1: REMBG AI (Heavy) ---
+        if attempt_number == 1:
+            log_msg("🧠 Mode 1: Rembg AI (Background Removal)", level="step")
+            output_data = remove(img_bytes)
+            nparr_ai = np.frombuffer(output_data, np.uint8)
+            img_ai = cv2.imdecode(nparr_ai, cv2.IMREAD_UNCHANGED)
+            if img_ai.shape[2] == 4:
+                alpha = img_ai[:, :, 3]
+                contours, _ = cv2.findContours(alpha, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                for contour in contours:
+                    x, y, w, h = cv2.boundingRect(contour)
+                    if w > 30 and h > 30 and x > 50:
+                        best_x = x; break
+                        
+        # --- MODEL 2: CANNY EDGE (Standard) ---
+        elif attempt_number == 2:
+            log_msg("🧠 Mode 2: Canny Edge Detection", level="step")
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+            edges = cv2.Canny(blurred, 50, 150)
+            contours, _ = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+            for contour in contours:
+                x, y, w, h = cv2.boundingRect(contour)
+                if 35 < w < 85 and 35 < h < 85 and x > 60:
+                    best_x = x; break
+        
+        # --- MODEL 3: THRESHOLDING (High Contrast) ---
+        elif attempt_number == 3:
+            log_msg("🧠 Mode 3: Thresholding (Contrast)", level="step")
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            _, thresh = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY_INV)
+            contours, _ = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+            for contour in contours:
+                x, y, w, h = cv2.boundingRect(contour)
+                # Stricter size filter for thresholding
+                if 40 < w < 60 and 40 < h < 60 and x > 60:
+                    best_x = x; break
+
+        # --- MODEL 4: SCANLINE ANALYSIS (Pixel Change) ---
+        elif attempt_number == 4:
+            log_msg("🧠 Mode 4: Scanline Pixel Analysis", level="step")
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            h, w = gray.shape
+            # Scan a middle row
+            mid_row = gray[int(h/2), :]
+            # Find biggest sudden jump in pixel value after x=50
+            for i in range(50, w-10):
+                if abs(int(mid_row[i]) - int(mid_row[i+1])) > 50: # Threshold change
+                    best_x = i
+                    break
+
+        # --- MODEL 5: BLIND GUESS (Last Resort) ---
+        elif attempt_number == 5:
+            log_msg("🧠 Mode 5: Random Guess (Hail Mary)", level="step")
+            # Usually puzzle is between 50% and 80% of width
+            h, w, _ = img.shape
+            best_x = random.randint(int(w*0.5), int(w*0.8))
+
         return best_x
+
     except Exception as e:
-        print(f"AI Solver Error: {e}")
+        log_msg(f"Solver Error (Mode {attempt_number}): {e}", level="step")
         return 0
 
 # --- CLICK LOGIC ---
@@ -236,13 +281,10 @@ async def execute_click_strategy(page, element, strategy_id, desc):
         await element.scroll_into_view_if_needed()
         box = await element.bounding_box()
         if not box: return False
-        
         cx = box['x'] + box['width'] / 2
         cy = box['y'] + box['height'] / 2
-        
         await show_red_dot(page, cx, cy)
         await capture_step(page, f"Target_{desc}", wait_time=0.2)
-
         log_msg(f"🖱️ Clicking: {desc}", level="step")
         await element.click()
         return True
@@ -276,7 +318,7 @@ async def master_loop():
                 remove_current_number()
                 CURRENT_RETRIES = 0
             elif res == "captcha_fail":
-                log_msg("💀 Puzzle Failed (Too Many Tries). Skip.", level="main")
+                log_msg("💀 Puzzle Failed (5 Models Tried). Skip.", level="main")
                 save_to_file(FAILED_FILE, current_number)
                 remove_current_number()
                 CURRENT_RETRIES = 0
@@ -343,104 +385,77 @@ async def run_huawei_session(phone, proxy):
                     await page.keyboard.type(final_phone, delay=100)
                 else: return "retry"
 
-                # --- 4. GET CODE & CAPTCHA LOOP ---
+                # --- 4. GET CODE & WATERFALL LOOP ---
                 get_code_btn = page.get_by_text("Get code", exact=True)
                 if await get_code_btn.count() > 0:
                     await execute_click_strategy(page, get_code_btn.first, 1, "Get_Code_Btn")
                     
-                    # 🔥 1. MANDATORY WAIT (Initial Load) 🔥
                     log_msg("⏳ Hard Wait: 10s for Initial Load...", level="step")
                     await asyncio.sleep(10)
                     
-                    # 🔥 LOOP TO CHECK & RE-SOLVE 🔥
-                    captcha_attempts = 0
-                    max_attempts = 5 # Don't loop forever
+                    # 🔥 5-MODEL WATERFALL LOOP 🔥
+                    attempt_count = 0
+                    max_models = 5 
                     
-                    while captcha_attempts < max_attempts:
+                    while attempt_count < max_models:
                         if not BOT_RUNNING: return "retry"
                         
-                        # --- CHECK FOR PUZZLE ---
                         puzzle_container = page.locator(".geetest_window").or_(page.locator(".nc_scale")).or_(page.locator("iframe[src*='captcha']"))
                         is_puzzle_present = await puzzle_container.count() > 0 or await page.get_by_text("Please complete verification").count() > 0
                         
                         if is_puzzle_present:
-                            captcha_attempts += 1
-                            log_msg(f"🧩 Puzzle Found (Attempt {captcha_attempts}). Solving...", level="main")
+                            attempt_count += 1
+                            log_msg(f"🧩 Trying Model #{attempt_count}...", level="main")
                             
-                            # 1. Capture Full Loaded Captcha
                             puzzle_img = page.locator("img[src*='captcha']").first
                             if await puzzle_img.count() == 0: puzzle_img = page.locator(".geetest_canvas_bg").first
                             
                             if await puzzle_img.count() > 0:
-                                await capture_step(page, f"Captcha_Attempt_{captcha_attempts}_Start") # PROOF START
+                                await capture_step(page, f"Model_{attempt_count}_Start")
                                 await puzzle_img.screenshot(path="temp_puzzle.png")
                                 
-                                # 2. AI Solve
-                                distance = solve_puzzle_heavy_ai("temp_puzzle.png")
+                                # 🔥 CALL WATERFALL SOLVER 🔥
+                                distance = waterfall_solver("temp_puzzle.png", attempt_number=attempt_count)
+                                log_msg(f"🧠 Model {attempt_count} Prediction: {distance}px", level="step")
                                 
                                 if distance > 0:
-                                    # 3. Find Slider
                                     slider = page.locator(".geetest_slider_button").or_(page.locator(".nc_iconfont.btn_slide")).or_(page.locator(".yidun_slider"))
-                                    
                                     if await slider.count() > 0:
                                         box = await slider.bounding_box()
                                         if box:
                                             start_x = box['x'] + box['width'] / 2
                                             start_y = box['y'] + box['height'] / 2
                                             
-                                            await page.mouse.move(start_x, start_y)
-                                            await page.mouse.down()
+                                            await page.mouse.move(start_x, start_y); await page.mouse.down()
                                             
                                             target_x = start_x + distance
                                             steps = 15
-                                            
                                             for i in range(steps):
                                                 move_x = start_x + (distance * (i / steps))
                                                 move_y = start_y + random.randint(-5, 5) 
                                                 await page.mouse.move(move_x, move_y)
-                                                if i == 7: 
-                                                    await show_red_dot(page, move_x, move_y)
-                                                    await capture_step(page, f"Captcha_Attempt_{captcha_attempts}_Mid", wait_time=0.1)
+                                                if i == 7: await show_red_dot(page, move_x, move_y)
                                                 await asyncio.sleep(0.02)
 
                                             await show_red_dot(page, target_x, start_y)
-                                            await page.mouse.move(target_x, start_y)
-                                            await asyncio.sleep(0.5)
-                                            await page.mouse.up()
+                                            await page.mouse.move(target_x, start_y); await asyncio.sleep(0.5); await page.mouse.up()
                                             
-                                            log_msg("🚀 Slider Dropped! Waiting 10s for Verification...", level="step")
-                                            # 🔥 WAIT 10s AFTER DROP TO SEE IF IT WORKED 🔥
+                                            log_msg(f"🚀 Model {attempt_count} Dropped! Waiting 10s...", level="step")
                                             await asyncio.sleep(10)
-                                            continue # Loop back to check if it's gone
-                                        else:
-                                            log_msg("❌ Slider box not found.", level="step")
-                                            break
-                                    else:
-                                        log_msg("❌ Slider element not found.", level="step")
-                                        break
-                                else:
-                                    log_msg("❌ AI failed to find target.", level="step")
-                                    await asyncio.sleep(2)
-                            else:
-                                log_msg("❌ Puzzle Image element missing.", level="step")
-                                break
+                                            continue 
                         
                         else:
-                            # --- CAPTCHA GONE: CHECK RESULT ---
-                            log_msg("✨ Captcha Gone. Checking Result...", level="step")
-                            
-                            # Check Success (Timer or Text)
+                            # Captcha Gone? Check Success
                             if await page.get_by_text("s", exact=False).count() > 0 or await page.get_by_text("sent", exact=False).count() > 0:
                                 log_msg("✅ SUCCESS! Code Sent.", level="main")
                                 await capture_step(page, "Success_Final")
                                 return "success"
                             else:
-                                # Captcha gone but no success -> Error
-                                log_msg("❌ No Captcha & No Success. Likely Error.", level="main")
-                                await capture_step(page, "Error_No_Captcha_No_Success")
+                                log_msg("❌ Error: No Captcha & No Success.", level="main")
+                                await capture_step(page, "Error_Status")
                                 return "captcha_fail"
                     
-                    log_msg("❌ Failed to solve after multiple attempts.", level="main")
+                    log_msg("❌ All 5 Models Failed.", level="main")
                     return "captcha_fail"
 
                 else: return "retry"
@@ -454,3 +469,9 @@ async def run_huawei_session(phone, proxy):
                 
     except Exception as launch_e:
         log_msg(f"❌ LAUNCH ERROR: {launch_e}", level="main"); return "retry"
+
+# --- 🔥 RAILWAY PORT FIX (VERY IMPORTANT) 🔥 ---
+if __name__ == "__main__":
+    # Railway assigns a random PORT, we must listen on 0.0.0.0
+    port = int(os.environ.get("PORT", 8080))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, log_level="info")

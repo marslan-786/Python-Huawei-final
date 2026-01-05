@@ -6,7 +6,7 @@ playwright
 python-dotenv
 aiofiles
 imageio[ffmpeg]
-opencv-python-headless
+opencv-python
 numpy
 scipy
 pytweening

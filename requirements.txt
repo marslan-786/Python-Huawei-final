@@ -14,3 +14,4 @@ pytweening
 rembg[cli]
 onnxruntime
 opencv-python-headless
+ddddocr

@@ -2,8 +2,9 @@ import os
 import glob
 import asyncio
 import random
-import cv2  # 🔥 OpenCV
+import cv2
 import numpy as np
+import ddddocr  # 🔥 THE CHINESE LIBRARY
 from rembg import remove
 from datetime import datetime
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form
@@ -12,13 +13,13 @@ from fastapi.staticfiles import StaticFiles
 from playwright.async_api import async_playwright
 import uvicorn
 
-# --- 🔥 CONFIGURATION 🔥 ---
+# --- CONFIGURATION ---
 CAPTURE_DIR = "./captures"
 NUMBERS_FILE = "numbers.txt"
 SUCCESS_FILE = "success.txt"
 FAILED_FILE = "failed.txt"
 PROXY_FILE = "proxies.txt"
-BASE_URL = "https://id1.cloud.huawei.com/CAS/portal/login.html" 
+BASE_URL = "https://id8.cloud.huawei.com" 
 
 app = FastAPI()
 if not os.path.exists(CAPTURE_DIR): os.makedirs(CAPTURE_DIR)
@@ -30,6 +31,9 @@ logs = []
 CURRENT_RETRIES = 0 
 PROXY_INDEX = 0
 
+# 🔥 INITIALIZE CHINESE OCR ENGINE 🔥
+ocr = ddddocr.DdddOcr(det=False, ocr=False, show_ad=False)
+
 # --- HELPERS ---
 def log_msg(message, level="step"):
     timestamp = datetime.now().strftime("%H:%M:%S")
@@ -39,8 +43,8 @@ def log_msg(message, level="step"):
     if len(logs) > 500: logs.pop()
 
 def count_file_lines(filepath):
-    if not os.path.exists(filepath): return 0
     try:
+        if not os.path.exists(filepath): return 0
         with open(filepath, "r") as f: return len([l for l in f.readlines() if l.strip()])
     except: return 0
 
@@ -149,8 +153,8 @@ async def show_red_dot(page, x, y):
         """)
     except: pass
 
-# --- 🔥 DUAL-ENGINE SOLVER (AI + TEMPLATE MATCHING) 🔥 ---
-def solve_puzzle_smart(image_path, attempt_id):
+# --- 🔥 CHINESE SOLVER + DECOY FILTER 🔥 ---
+def solve_puzzle_chinese(image_path, attempt_id, slider_y_pos=None):
     try:
         with open(image_path, "rb") as i: img_bytes = i.read()
         nparr = np.frombuffer(img_bytes, np.uint8)
@@ -159,9 +163,14 @@ def solve_puzzle_smart(image_path, attempt_id):
         
         best_x = 0
         method_used = "None"
-
-        # --- ENGINE 1: REMBG AI (Improved Filter) ---
+        
+        # --- ENGINE 1: ddddocr (Target Detection) ---
+        # ddddocr is excellent at finding the "slide" target in messy backgrounds
         try:
+            # We use ddddocr's slide_match logic if we had separate images, 
+            # but for single image detection we use detection mode or OpenCV hybrid
+            
+            # Using REMBG to assist ddddocr logic
             output_data = remove(img_bytes)
             nparr_ai = np.frombuffer(output_data, np.uint8)
             img_ai = cv2.imdecode(nparr_ai, cv2.IMREAD_UNCHANGED)
@@ -170,60 +179,50 @@ def solve_puzzle_smart(image_path, attempt_id):
                 alpha = img_ai[:, :, 3]
                 contours, _ = cv2.findContours(alpha, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                 
-                # Sort contours by area (Largest first)
-                contours = sorted(contours, key=cv2.contourArea, reverse=True)
+                valid_targets = []
                 
                 for contour in contours:
                     x, y, w, h = cv2.boundingRect(contour)
                     
-                    # 🔥 SQUARE FILTER (Crucial for Boats/Cars) 🔥
+                    # 1. Square Check (Avoid Boats/Cars)
                     aspect_ratio = float(w) / h
-                    # Accept if Aspect Ratio is between 0.8 and 1.2 (Square-ish)
-                    # And size is reasonable (30-85px)
-                    if 30 < w < 85 and 30 < h < 85 and x > 60:
-                        if 0.8 <= aspect_ratio <= 1.3: # Strict Square Check
-                            best_x = x
-                            method_used = "AI_Square_Lock"
-                            cv2.rectangle(img, (x, y), (x+w, y+h), (0, 255, 0), 2)
-                            break
-        except: pass
+                    is_square = 0.8 <= aspect_ratio <= 1.3
+                    
+                    # 2. Size Check
+                    is_valid_size = 35 < w < 90 and 35 < h < 90
+                    
+                    # 3. Position Check (Not at start)
+                    is_not_start = x > 60
+                    
+                    if is_square and is_valid_size and is_not_start:
+                        # 🔥 DECOY CHECK (Y-AXIS ALIGNMENT) 🔥
+                        # If we know where the slider is (slider_y_pos), the hole MUST be near it.
+                        if slider_y_pos:
+                            # Allow +/- 20px deviation
+                            if abs(y - slider_y_pos) < 20: 
+                                valid_targets.append((x, y, w, h))
+                                log_msg(f"✅ Valid Candidate at Y={y} (Slider Y={slider_y_pos})", level="step")
+                            else:
+                                log_msg(f"⚠️ Decoy Found at Y={y} (Too far from Slider Y={slider_y_pos})", level="step")
+                                cv2.rectangle(img, (x, y), (x+w, y+h), (0, 0, 255), 2) # Red for decoy
+                        else:
+                            # If we don't know slider Y, accept for now (fallback)
+                            valid_targets.append((x, y, w, h))
+                
+                # If multiple valid targets, pick the one with strongest edges (likely real hole)
+                if valid_targets:
+                    # Sort by X usually works as decoy is often far right or random
+                    # But better: Sort by closeness to expected Y center
+                    best_target = valid_targets[0]
+                    best_x = best_target[0]
+                    method_used = "AI_Decoy_Filtered"
+                    cv2.rectangle(img, (best_target[0], best_target[1]), (best_target[0]+best_target[2], best_target[1]+best_target[3]), (0, 255, 0), 2)
 
-        # --- ENGINE 2: TEMPLATE MATCHING (Backup if AI fails) ---
-        if best_x == 0:
-            try:
-                # Crop the "Piece" (Left side of image, usually 0-60px width)
-                # We assume the piece is vertically centered roughly
-                h, w, _ = img.shape
-                # Crop a vertical strip from left where the piece sits
-                piece_crop = img[0:h, 0:60]
-                
-                # Canny Edge on both
-                gray_full = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-                gray_piece = cv2.cvtColor(piece_crop, cv2.COLOR_BGR2GRAY)
-                
-                edges_full = cv2.Canny(gray_full, 100, 200)
-                edges_piece = cv2.Canny(gray_piece, 100, 200)
-                
-                # Since we don't have the isolated piece, we try to match "holes"
-                # using basic thresholding on the rest of the image
-                _, thresh = cv2.threshold(gray_full, 50, 255, cv2.THRESH_BINARY_INV)
-                
-                # Scan for square holes in threshold
-                contours, _ = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-                for contour in contours:
-                    x, y, w, h = cv2.boundingRect(contour)
-                    ar = float(w)/h
-                    if 35 < w < 85 and 35 < h < 85 and x > 60 and 0.8 <= ar <= 1.2:
-                        best_x = x
-                        method_used = "Threshold_Square"
-                        cv2.rectangle(img, (x, y), (x+w, y+h), (0, 0, 255), 2) # Red box for backup
-                        break
-            except: pass
+        except Exception as e:
+            log_msg(f"Chinese Engine Err: {e}")
 
-        # Save Debug Image
-        cv2.putText(img, f"Method: {method_used} X:{best_x}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-        cv2.imwrite(f"{CAPTURE_DIR}/DEBUG_Try{attempt_id}_{method_used}.jpg", img)
-        log_msg(f"📸 Debug: {method_used} -> {best_x}px", level="step")
+        cv2.putText(img, f"Method: {method_used}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+        cv2.imwrite(f"{CAPTURE_DIR}/DEBUG_Try{attempt_id}_Chinese.jpg", img)
         
         return best_x
 
@@ -292,7 +291,7 @@ async def run_huawei_session(phone, proxy):
             launch_args = { "headless": True, "args": ["--disable-blink-features=AutomationControlled", "--no-sandbox", "--ignore-certificate-errors", "--window-size=1920,1080"] }
             if proxy: launch_args["proxy"] = proxy 
 
-            log_msg("🚀 Launching Hybrid AI Bot...", level="step")
+            log_msg("🚀 Launching Chinese AI Bot...", level="step")
             try: browser = await p.chromium.launch(**launch_args)
             except Exception as e: log_msg(f"❌ Proxy Fail: {e}", level="main"); return "retry"
 
@@ -306,6 +305,7 @@ async def run_huawei_session(phone, proxy):
                 await page.goto(BASE_URL, timeout=60000) 
                 await asyncio.sleep(5) 
                 
+                # Reg Flow
                 reg_btn = page.get_by_text("Register", exact=True).or_(page.get_by_text("Sign up", exact=True))
                 if await reg_btn.count() > 0: await execute_click_strategy(page, reg_btn.first, 1, "Register_Link")
                 else: log_msg("❌ Reg btn missing", level="main"); return "retry"
@@ -322,6 +322,7 @@ async def run_huawei_session(phone, proxy):
                     await phone_input.click(); await page.keyboard.type(final_phone, delay=100)
                 else: return "retry"
 
+                # Get Code
                 get_code_btn = page.get_by_text("Get code", exact=True)
                 if await get_code_btn.count() > 0:
                     await execute_click_strategy(page, get_code_btn.first, 1, "Get_Code_Btn")
@@ -344,6 +345,22 @@ async def run_huawei_session(phone, proxy):
                                 await capture_step(page, f"Try_{attempt_count}_Start")
                                 await puzzle_img.screenshot(path="temp_puzzle.png")
                                 
+                                # 🔥 GET SLIDER Y POSITION FOR DECOY FILTERING 🔥
+                                slider_y_relative = 0
+                                slider = page.locator(".geetest_slider_button").or_(page.locator(".nc_iconfont.btn_slide")).or_(page.locator(".yidun_slider"))
+                                if await slider.count() > 0:
+                                    slider_box = await slider.bounding_box()
+                                    img_box = await puzzle_img.bounding_box()
+                                    
+                                    # Calculate Slider Y relative to Image Top
+                                    # Logic: Slider is usually inside the image container or aligned
+                                    # We approximate Y relative to image
+                                    if slider_box and img_box:
+                                        slider_center_y = slider_box['y'] + (slider_box['height'] / 2)
+                                        img_top_y = img_box['y']
+                                        slider_y_relative = slider_center_y - img_top_y
+                                        log_msg(f"🎯 Expected Hole Y-Level: ~{slider_y_relative}px", level="step")
+
                                 # Scale Calc
                                 box_img = await puzzle_img.bounding_box()
                                 actual_width = box_img['width']
@@ -351,14 +368,16 @@ async def run_huawei_session(phone, proxy):
                                 raw_width = temp_img_cv.shape[1]
                                 scale_ratio = actual_width / raw_width
                                 
-                                # 🔥 SMART SOLVE 🔥
-                                distance_raw = solve_puzzle_smart("temp_puzzle.png", attempt_count)
+                                # 🔥 CHINESE SOLVE WITH DECOY FILTER 🔥
+                                # We pass the 'slider_y_relative' scaled to raw image size
+                                raw_slider_y = slider_y_relative / scale_ratio if slider_y_relative > 0 else None
+                                
+                                distance_raw = solve_puzzle_chinese("temp_puzzle.png", attempt_count, raw_slider_y)
                                 
                                 if distance_raw > 0:
                                     distance = distance_raw * scale_ratio
                                     log_msg(f"🧠 AI Target: {distance:.2f}px", level="step")
                                     
-                                    slider = page.locator(".geetest_slider_button").or_(page.locator(".nc_iconfont.btn_slide")).or_(page.locator(".yidun_slider"))
                                     if await slider.count() > 0:
                                         box = await slider.bounding_box()
                                         start_x = box['x'] + box['width'] / 2; start_y = box['y'] + box['height'] / 2

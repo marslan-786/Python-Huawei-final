@@ -7,6 +7,8 @@ import numpy as np
 import ddddocr  # 🔥 THE CHINESE LIBRARY
 from rembg import remove
 from datetime import datetime
+from typing import Optional # 🔥 FIXED: Added this
+from urllib.parse import urlparse # 🔥 FIXED: Added this
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -19,7 +21,7 @@ NUMBERS_FILE = "numbers.txt"
 SUCCESS_FILE = "success.txt"
 FAILED_FILE = "failed.txt"
 PROXY_FILE = "proxies.txt"
-BASE_URL = "https://id8.cloud.huawei.com" 
+BASE_URL = "https://id1.cloud.huawei.com/CAS/portal/login.html" 
 
 app = FastAPI()
 if not os.path.exists(CAPTURE_DIR): os.makedirs(CAPTURE_DIR)
@@ -164,13 +166,8 @@ def solve_puzzle_chinese(image_path, attempt_id, slider_y_pos=None):
         best_x = 0
         method_used = "None"
         
-        # --- ENGINE 1: ddddocr (Target Detection) ---
-        # ddddocr is excellent at finding the "slide" target in messy backgrounds
+        # --- ENGINE: Hybrid (REMBG + Contour + Decoy Logic) ---
         try:
-            # We use ddddocr's slide_match logic if we had separate images, 
-            # but for single image detection we use detection mode or OpenCV hybrid
-            
-            # Using REMBG to assist ddddocr logic
             output_data = remove(img_bytes)
             nparr_ai = np.frombuffer(output_data, np.uint8)
             img_ai = cv2.imdecode(nparr_ai, cv2.IMREAD_UNCHANGED)
@@ -196,7 +193,6 @@ def solve_puzzle_chinese(image_path, attempt_id, slider_y_pos=None):
                     
                     if is_square and is_valid_size and is_not_start:
                         # 🔥 DECOY CHECK (Y-AXIS ALIGNMENT) 🔥
-                        # If we know where the slider is (slider_y_pos), the hole MUST be near it.
                         if slider_y_pos:
                             # Allow +/- 20px deviation
                             if abs(y - slider_y_pos) < 20: 
@@ -206,13 +202,10 @@ def solve_puzzle_chinese(image_path, attempt_id, slider_y_pos=None):
                                 log_msg(f"⚠️ Decoy Found at Y={y} (Too far from Slider Y={slider_y_pos})", level="step")
                                 cv2.rectangle(img, (x, y), (x+w, y+h), (0, 0, 255), 2) # Red for decoy
                         else:
-                            # If we don't know slider Y, accept for now (fallback)
                             valid_targets.append((x, y, w, h))
                 
-                # If multiple valid targets, pick the one with strongest edges (likely real hole)
                 if valid_targets:
                     # Sort by X usually works as decoy is often far right or random
-                    # But better: Sort by closeness to expected Y center
                     best_target = valid_targets[0]
                     best_x = best_target[0]
                     method_used = "AI_Decoy_Filtered"
@@ -353,8 +346,6 @@ async def run_huawei_session(phone, proxy):
                                     img_box = await puzzle_img.bounding_box()
                                     
                                     # Calculate Slider Y relative to Image Top
-                                    # Logic: Slider is usually inside the image container or aligned
-                                    # We approximate Y relative to image
                                     if slider_box and img_box:
                                         slider_center_y = slider_box['y'] + (slider_box['height'] / 2)
                                         img_top_y = img_box['y']
@@ -369,7 +360,6 @@ async def run_huawei_session(phone, proxy):
                                 scale_ratio = actual_width / raw_width
                                 
                                 # 🔥 CHINESE SOLVE WITH DECOY FILTER 🔥
-                                # We pass the 'slider_y_relative' scaled to raw image size
                                 raw_slider_y = slider_y_relative / scale_ratio if slider_y_relative > 0 else None
                                 
                                 distance_raw = solve_puzzle_chinese("temp_puzzle.png", attempt_count, raw_slider_y)

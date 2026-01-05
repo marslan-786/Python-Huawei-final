@@ -22,8 +22,7 @@ NUMBERS_FILE = "numbers.txt"
 SUCCESS_FILE = "success.txt"
 FAILED_FILE = "failed.txt"
 PROXY_FILE = "proxies.txt"
-# Huawei Login Page (Standard Entry Point)
-BASE_URL = "https://id8.cloud.huawei.com" 
+BASE_URL = "https://id1.cloud.huawei.com/CAS/portal/login.html" 
 
 # --- INITIALIZE ---
 app = FastAPI()
@@ -34,7 +33,7 @@ SETTINGS = {"country": "Default", "proxy_manual": ""}
 BOT_RUNNING = False
 logs = []
 CURRENT_RETRIES = 0 
-PROXY_INDEX = 0  # For Sequential Proxy
+PROXY_INDEX = 0
 
 # --- HELPERS ---
 def count_file_lines(filepath):
@@ -69,7 +68,7 @@ def remove_current_number():
 def save_to_file(filename, data):
     with open(filename, "a") as f: f.write(f"{data}\n")
 
-# --- PROXY (SEQUENTIAL LOGIC) ---
+# --- PROXY ---
 def parse_proxy_string(proxy_str):
     if not proxy_str or len(proxy_str) < 5: return None
     p = proxy_str.strip()
@@ -121,7 +120,7 @@ async def download_file(file_type: str):
 async def clear_all_data():
     global logs
     logs = []
-    open(NUMBERS_FILE, 'w').close() # Wipes the numbers file
+    open(NUMBERS_FILE, 'w').close()
     log_msg("🗑️ System & Numbers Cleared.", level="main")
     return {"status": "cleared"}
 
@@ -137,20 +136,12 @@ async def get_status():
     images = [f"/captures/{os.path.basename(f)}" for f in files]
     prox = get_current_proxy()
     p_disp = prox['server'] if prox else "🌐 Direct Internet"
-    
     stats = {
         "remaining": count_file_lines(NUMBERS_FILE),
         "success": count_file_lines(SUCCESS_FILE),
         "failed": count_file_lines(FAILED_FILE)
     }
-    
-    return JSONResponse({
-        "logs": logs[:50], 
-        "images": images, 
-        "running": BOT_RUNNING, 
-        "stats": stats, 
-        "current_proxy": p_disp
-    })
+    return JSONResponse({"logs": logs[:50], "images": images, "running": BOT_RUNNING, "stats": stats, "current_proxy": p_disp})
 
 @app.post("/update_settings")
 async def update_settings(country: str = Form(...), manual_proxy: Optional[str] = Form("")):
@@ -220,11 +211,9 @@ async def execute_click_strategy(page, element, strategy_id, desc):
         cx = box['x'] + box['width'] / 2
         cy = box['y'] + box['height'] / 2
         
-        # Visualize
         await show_red_dot(page, cx, cy)
         await capture_step(page, f"Target_{desc}", wait_time=0.2)
 
-        # Standard Click (Desktop is simpler than Mobile Touch)
         log_msg(f"🖱️ Clicking: {desc}", level="step")
         await element.click()
         return True
@@ -232,7 +221,7 @@ async def execute_click_strategy(page, element, strategy_id, desc):
 
 # --- WORKER ---
 async def master_loop():
-    global BOT_RUNNING, CURRENT_RETRIES
+    global BOT_RUNNING
     if not get_current_number_from_file():
         log_msg("ℹ️ No Numbers File.", level="main"); BOT_RUNNING = False; return
 
@@ -250,18 +239,11 @@ async def master_loop():
         log_msg(f"🌍 Connection: {p_show}", level="step") 
         
         try:
-            # Running Huawei Session
             await run_huawei_session(current_number, proxy_cfg)
             
-            # Since we are just testing registration page load, we stop here for now
-            # and move to the next number or pause as per your "Step 1" request.
-            # For now, I'll simulate a "Done" status to keep the loop moving safely
-            # but ideally we wait for your next logic.
-            
-            log_msg("🏁 Test Step Done. Waiting...", level="main")
-            await asyncio.sleep(5)
-            # Remove number just to keep flow (for now) or you can comment this out
-            # remove_current_number() 
+            log_msg("🏁 Cycle Complete. Next...", level="main")
+            await asyncio.sleep(2)
+            remove_current_number() # Proceed to next number
 
         except Exception as e:
             log_msg(f"🔥 Crash: {e}", level="main")
@@ -271,61 +253,84 @@ async def master_loop():
 async def run_huawei_session(phone, proxy):
     try:
         async with async_playwright() as p:
-            # 🔥 DESKTOP BROWSER SETTINGS 🔥
             launch_args = {
                 "headless": True, 
-                "args": [
-                    "--disable-blink-features=AutomationControlled", 
-                    "--no-sandbox", 
-                    "--ignore-certificate-errors",
-                    "--window-size=1920,1080"
-                ]
+                "args": ["--disable-blink-features=AutomationControlled", "--no-sandbox", "--ignore-certificate-errors", "--window-size=1920,1080"]
             }
             if proxy: launch_args["proxy"] = proxy 
 
-            log_msg("🚀 Launching Desktop Browser...", level="step")
+            log_msg("🚀 Launching PC Browser...", level="step")
             try: browser = await p.chromium.launch(**launch_args)
             except Exception as e: log_msg(f"❌ Proxy Fail: {e}", level="main"); return
 
-            # 🔥 REAL PC USER AGENT 🔥
             context = await browser.new_context(
                 viewport={'width': 1920, 'height': 1080},
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 locale="en-US"
             )
-            
-            # Clear everything for fresh start
             await context.clear_cookies()
-            await context.clear_permissions()
-            
             page = await context.new_page()
 
             log_msg("🌐 Opening Huawei Portal...", level="step")
             try:
                 if not BOT_RUNNING: return
                 await page.goto(BASE_URL, timeout=60000) 
-                
-                log_msg("⏳ Page Loading...", level="step")
                 await asyncio.sleep(5) 
-                await capture_step(page, "01_Portal_Loaded", wait_time=0)
-
-                # --- STEP 1: FIND & CLICK REGISTER ---
-                log_msg("🔎 Finding 'Register' Button...", level="step")
                 
-                # Huawei usually has "Register" text.
+                # --- 1. GOTO REGISTER PAGE ---
+                log_msg("🔎 Finding 'Register'...", level="step")
                 reg_btn = page.get_by_text("Register", exact=True).or_(page.get_by_text("Sign up", exact=True))
-                
                 if await reg_btn.count() > 0:
-                    await execute_click_strategy(page, reg_btn.first, 1, "Register_Btn")
-                    
-                    log_msg("⏳ Waiting for Registration Page...", level="step")
-                    await asyncio.sleep(8) # Wait for page load
-                    
-                    await capture_step(page, "02_Registration_Page")
-                    log_msg("✅ Registration Page Reached (Screenshot Saved).", level="main")
+                    await execute_click_strategy(page, reg_btn.first, 1, "Register_Link")
+                    await asyncio.sleep(5)
                 else:
-                    log_msg("❌ Register button not found.", level="main")
-                    await capture_step(page, "Error_No_Reg_Btn")
+                    log_msg("❌ Register link missing.", level="main"); return
+
+                # --- 2. SELECT PHONE TAB ---
+                phone_tab = page.get_by_text("Register with phone number")
+                if await phone_tab.count() > 0:
+                    log_msg("📱 Selecting Phone Tab...", level="step")
+                    await execute_click_strategy(page, phone_tab.first, 1, "Phone_Tab")
+                    await asyncio.sleep(2)
+                
+                # --- 3. INPUT PHONE NUMBER (SMART LOGIC) ---
+                # Check: Only strip '7' if it STARTS with '7'
+                final_phone = phone
+                if phone.startswith("7") and len(phone) > 10:
+                    final_phone = phone[1:] # Strip
+                    log_msg(f"✨ Auto-trimmed +7: {final_phone}", level="step")
+                else:
+                    log_msg(f"✅ Number Kept As-Is: {final_phone}", level="step")
+                
+                phone_input = page.get_by_placeholder("Phone")
+                if await phone_input.count() > 0:
+                    await show_red_dot(page, 0, 0)
+                    await phone_input.click()
+                    await page.keyboard.type(final_phone, delay=100)
+                    await capture_step(page, "03_Phone_Typed")
+                else:
+                    log_msg("❌ Phone input field not found.", level="main"); return
+
+                # --- 4. CLICK GET CODE ---
+                log_msg("📩 Clicking 'Get code'...", level="step")
+                get_code_btn = page.get_by_text("Get code", exact=True)
+                
+                if await get_code_btn.count() > 0:
+                    await execute_click_strategy(page, get_code_btn.first, 1, "Get_Code_Btn")
+                    
+                    # --- 🔥 5. 30-SECOND OBSERVATION LOOP 🔥 ---
+                    log_msg("⏳ Waiting 30s for Code (Capturing every 5s)...", level="main")
+                    
+                    for i in range(1, 7): # 1 to 6 (6 * 5 = 30s)
+                        if not BOT_RUNNING: break
+                        await asyncio.sleep(5)
+                        await capture_step(page, f"05_Wait_Step_{i}_(5s)")
+                        log_msg(f"📸 Capture {i}/6", level="step")
+                    
+                    log_msg("🏁 Observation Finished.", level="main")
+
+                else:
+                    log_msg("❌ 'Get code' button missing.", level="main"); return
 
             except Exception as e:
                 log_msg(f"❌ Session Error: {str(e)}", level="main")

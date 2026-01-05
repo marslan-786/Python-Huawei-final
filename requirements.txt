@@ -13,3 +13,5 @@ pytweening
 pyautogui
 pymongo
 python-multipart
+rembg
+onnxruntime

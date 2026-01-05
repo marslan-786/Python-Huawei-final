@@ -4,8 +4,8 @@ import asyncio
 import random
 import string
 import shutil
-import cv2  # 🔥 OpenCV for Heavy Image Processing
-import numpy as np # 🔥 Math for arrays
+import cv2  # 🔥 COMPUTER VISION
+import numpy as np
 from datetime import datetime
 from typing import Optional
 from urllib.parse import urlparse
@@ -23,7 +23,7 @@ NUMBERS_FILE = "numbers.txt"
 SUCCESS_FILE = "success.txt"
 FAILED_FILE = "failed.txt"
 PROXY_FILE = "proxies.txt"
-BASE_URL = "https://id8.cloud.huawei.coml" 
+BASE_URL = "https://id8.cloud.huawei.com/" 
 
 # --- INITIALIZE ---
 app = FastAPI()
@@ -184,52 +184,55 @@ async def show_red_dot(page, x, y):
     try:
         await page.evaluate(f"""
             var dot = document.createElement('div');
+            dot.id = 'bot-marker';
             dot.style.position = 'absolute'; 
             dot.style.left = '{x-15}px'; dot.style.top = '{y-15}px';
             dot.style.width = '30px'; dot.style.height = '30px'; 
-            dot.style.background = 'rgba(255, 0, 0, 0.8)'; 
+            dot.style.background = 'rgba(255, 0, 0, 0.9)'; 
             dot.style.borderRadius = '50%'; dot.style.zIndex = '2147483647'; 
-            dot.style.pointerEvents = 'none'; dot.style.border = '4px solid yellow'; 
-            dot.style.boxShadow = '0 0 15px rgba(0,0,0,0.8)';
+            dot.style.pointerEvents = 'none'; dot.style.border = '3px solid white'; 
+            dot.style.boxShadow = '0 0 10px rgba(0,0,0,0.8)';
             document.body.appendChild(dot);
-            setTimeout(() => {{ dot.remove(); }}, 1500);
+            setTimeout(() => {{ if(dot) dot.remove(); }}, 2000);
         """)
     except: pass
 
-# --- 🔥 HEAVY TOOLS: OPENCV SOLVER 🔥 ---
-def get_captcha_position(image_path):
+# --- 🔥 HEAVY OPENCV ENGINE 🔥 ---
+def solve_puzzle_opencv(image_path):
     try:
-        # Load image
+        # 1. Load Image
         img = cv2.imread(image_path)
+        if img is None: return 0
         
-        # 1. Convert to Grayscale
+        # 2. Convert to Grayscale
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         
-        # 2. Gaussian Blur (Reduce noise)
+        # 3. Gaussian Blur (Reduce Noise)
         blurred = cv2.GaussianBlur(gray, (5, 5), 0)
         
-        # 3. Canny Edge Detection (Find edges)
+        # 4. Canny Edge Detection (Find Edges)
         edges = cv2.Canny(blurred, 50, 150)
         
-        # 4. Find Contours
+        # 5. Find Contours
         contours, _ = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
         
-        target_x = 0
+        best_x = 0
         
+        # 6. Analyze Contours to find the "Hole"
         for contour in contours:
             x, y, w, h = cv2.boundingRect(contour)
             
-            # Filter logic: Huawei holes are usually roughly square (30-60px)
-            # And they are not at the very start (x > 50) because start is the piece itself
-            if 30 < w < 80 and 30 < h < 80 and x > 60:
-                target_x = x
-                # Draw logic for debug (optional, not saving debug image to save speed)
-                # cv2.rectangle(img, (x, y), (x + w, y + h), (0, 255, 0), 2)
+            # Logic: Hole is usually square-ish, ~40-50px size, and not at start (x>60)
+            if 35 < w < 85 and 35 < h < 85 and x > 60:
+                best_x = x
+                # We prioritize the first valid match from left
+                # Usually puzzles have the hole further right than the piece
                 break 
-                
-        return target_x
+        
+        return best_x
+        
     except Exception as e:
-        print(f"CV Error: {e}")
+        print(f"OpenCV Error: {e}")
         return 0
 
 # --- CLICK LOGIC ---
@@ -278,16 +281,16 @@ async def master_loop():
                 remove_current_number()
                 CURRENT_RETRIES = 0
             elif res == "captcha_fail":
-                log_msg("💀 Captcha Failed (Even with CV). Skip.", level="main")
+                log_msg("💀 Puzzle Failed. Skipping.", level="main")
                 save_to_file(FAILED_FILE, current_number)
                 remove_current_number()
                 CURRENT_RETRIES = 0
-            else: # retry
+            else: 
                 if CURRENT_RETRIES < 2:
                     CURRENT_RETRIES += 1
-                    log_msg(f"🔁 Retrying same number ({CURRENT_RETRIES}/3)...", level="main")
+                    log_msg(f"🔁 Retrying ({CURRENT_RETRIES}/3)...", level="main")
                 else:
-                    log_msg("💀 Max Retries Reached.", level="main")
+                    log_msg("💀 Max Retries.", level="main")
                     save_to_file(FAILED_FILE, current_number)
                     remove_current_number()
                     CURRENT_RETRIES = 0
@@ -302,12 +305,12 @@ async def run_huawei_session(phone, proxy):
     try:
         async with async_playwright() as p:
             launch_args = {
-                "headless": True, 
+                "headless": True, # Keep True for server use
                 "args": ["--disable-blink-features=AutomationControlled", "--no-sandbox", "--ignore-certificate-errors", "--window-size=1920,1080"]
             }
             if proxy: launch_args["proxy"] = proxy 
 
-            log_msg("🚀 Launching PC Browser...", level="step")
+            log_msg("🚀 Launching High-Spec Browser...", level="step")
             try: browser = await p.chromium.launch(**launch_args)
             except Exception as e: log_msg(f"❌ Proxy Fail: {e}", level="main"); return "retry"
 
@@ -319,30 +322,26 @@ async def run_huawei_session(phone, proxy):
             await context.clear_cookies()
             page = await context.new_page()
 
-            log_msg("🌐 Opening Huawei Portal...", level="step")
+            log_msg("🌐 Opening Huawei...", level="step")
             try:
                 if not BOT_RUNNING: return "retry"
                 await page.goto(BASE_URL, timeout=60000) 
                 await asyncio.sleep(5) 
                 
-                # --- 1. REGISTER PAGE ---
+                # --- 1. REGISTER ---
                 reg_btn = page.get_by_text("Register", exact=True).or_(page.get_by_text("Sign up", exact=True))
-                if await reg_btn.count() > 0:
-                    await execute_click_strategy(page, reg_btn.first, 1, "Register_Link")
-                    await asyncio.sleep(5)
-                else:
-                    log_msg("❌ Register link missing.", level="main"); return "retry"
+                if await reg_btn.count() > 0: await execute_click_strategy(page, reg_btn.first, 1, "Register_Link")
+                else: log_msg("❌ Reg btn missing", level="main"); return "retry"
+                await asyncio.sleep(5)
 
                 # --- 2. PHONE TAB ---
                 phone_tab = page.get_by_text("Register with phone number")
-                if await phone_tab.count() > 0:
-                    await execute_click_strategy(page, phone_tab.first, 1, "Phone_Tab")
-                    await asyncio.sleep(2)
+                if await phone_tab.count() > 0: await execute_click_strategy(page, phone_tab.first, 1, "Phone_Tab")
+                await asyncio.sleep(2)
                 
                 # --- 3. INPUT PHONE ---
                 final_phone = phone
                 if phone.startswith("7") and len(phone) > 10: final_phone = phone[1:] 
-                
                 phone_input = page.get_by_placeholder("Phone")
                 if await phone_input.count() > 0:
                     await phone_input.click()
@@ -354,65 +353,103 @@ async def run_huawei_session(phone, proxy):
                 if await get_code_btn.count() > 0:
                     await execute_click_strategy(page, get_code_btn.first, 1, "Get_Code_Btn")
                     
-                    # --- 🔥 5. HEAVY CAPTCHA SOLVER 🔥 ---
-                    log_msg("🧩 Looking for Puzzle...", level="step")
-                    await asyncio.sleep(3)
+                    # 🔥 5. CAPTCHA SOLVER (OPENCV) 🔥
+                    log_msg("⏳ Checking for Puzzle...", level="main")
                     
-                    # Check for Puzzle Popup
-                    if await page.get_by_text("Please complete verification").count() > 0:
-                        log_msg("🤖 PUZZLE DETECTED! Deploying OpenCV...", level="main")
+                    # Wait for Puzzle to Appear (or Code Sent)
+                    captcha_detected = False
+                    for _ in range(20): # Check for 10 seconds (20*0.5)
+                        if await page.get_by_text("Please complete verification").count() > 0:
+                            captcha_detected = True
+                            break
+                        if await page.get_by_text("s", exact=False).count() > 0: # Timer started?
+                            return "success"
+                        await asyncio.sleep(0.5)
+                    
+                    if captcha_detected:
+                        log_msg("🧩 PUZZLE FOUND! Waiting 10s for full load...", level="main")
+                        # 1. WAIT FOR FULL LOAD
+                        await asyncio.sleep(10)
                         
-                        # 1. Capture the Puzzle Image Element
-                        # Huawei usually has a container for the puzzle image
-                        puzzle_img = page.locator(".geetest_canvas_bg").or_(page.locator("img[src*='captcha']")).first
+                        # 2. CAPTURE PUZZLE IMAGE (Specific Element)
+                        # Try finding the specific image container for better accuracy
+                        puzzle_img = page.locator("img[src*='captcha']").first
+                        # Sometimes it's a div with background
+                        if await puzzle_img.count() == 0: puzzle_img = page.locator(".geetest_canvas_bg").first
                         
                         if await puzzle_img.count() > 0:
-                            # Save temp image for OpenCV
+                            await capture_step(page, "1_Captcha_Loaded_Full") # PROOF 1
                             await puzzle_img.screenshot(path="temp_puzzle.png")
                             
-                            # 2. Calculate Distance using OpenCV
-                            distance = get_captcha_position("temp_puzzle.png")
-                            log_msg(f"🧠 OpenCV Calculated Distance: {distance}px", level="step")
+                            # 3. SOLVE WITH OPENCV
+                            distance = solve_puzzle_opencv("temp_puzzle.png")
+                            log_msg(f"🧠 OpenCV Target: {distance}px", level="step")
                             
                             if distance > 0:
-                                # 3. Find the Slider Knob
-                                slider = page.locator(".geetest_slider_button").or_(page.locator(".nc_iconfont.btn_slide")) # Adjust selector if needed
+                                # 4. FIND SLIDER KNOB
+                                slider = page.locator(".geetest_slider_button").or_(page.locator(".nc_iconfont.btn_slide")).or_(page.locator(".yidun_slider"))
                                 
                                 if await slider.count() > 0:
                                     box = await slider.bounding_box()
                                     if box:
-                                        # 4. Human-Like Drag
-                                        # Move to slider
-                                        await page.mouse.move(box['x'] + 10, box['y'] + 10)
+                                        start_x = box['x'] + box['width'] / 2
+                                        start_y = box['y'] + box['height'] / 2
+                                        
+                                        # --- DRAG LOGIC WITH VISUALS ---
+                                        await page.mouse.move(start_x, start_y)
                                         await page.mouse.down()
                                         
-                                        # Drag with random steps
-                                        target_x = box['x'] + distance
-                                        steps = 20
-                                        for i in range(steps):
-                                            move_x = box['x'] + (distance * (i / steps)) + random.randint(-2, 2)
-                                            move_y = box['y'] + random.randint(-5, 5)
-                                            await page.mouse.move(move_x, move_y)
-                                            await asyncio.sleep(0.01) # fast but human
+                                        # Move in steps to create visuals
+                                        target_x = start_x + distance
+                                        steps = 10
                                         
-                                        # Final Adjust
-                                        await page.mouse.move(target_x, box['y'])
-                                        await asyncio.sleep(0.2)
+                                        for i in range(steps):
+                                            move_x = start_x + (distance * (i / steps))
+                                            # Add slight random y movement (Human-like)
+                                            move_y = start_y + random.randint(-5, 5) 
+                                            
+                                            await page.mouse.move(move_x, move_y)
+                                            
+                                            # PROOF 2: MID-WAY
+                                            if i == 5: 
+                                                await show_red_dot(page, move_x, move_y)
+                                                await capture_step(page, "2_Slider_Mid_Way", wait_time=0.2)
+                                                
+                                            await asyncio.sleep(0.05)
+
+                                        # PROOF 3: NEAR END
+                                        await show_red_dot(page, target_x, start_y)
+                                        await capture_step(page, "3_Slider_At_Target", wait_time=0.2)
+                                        
+                                        # Final Adjustment & Release
+                                        await page.mouse.move(target_x, start_y)
+                                        await asyncio.sleep(0.5) # Steady hand
                                         await page.mouse.up()
                                         
                                         log_msg("🚀 Slider Dropped!", level="step")
                                         await asyncio.sleep(5)
+                                        
+                                        # PROOF 4: RESULT
+                                        await capture_step(page, "4_Captcha_Result")
+                                        
+                                        # Verify Success
+                                        if await page.get_by_text("s", exact=False).count() > 0:
+                                            log_msg("✅ CAPTCHA SOLVED! Code Sent.", level="main")
+                                            return "success"
+                                        else:
+                                            log_msg("❌ Captcha Failed (Wrong Distance?).", level="main")
+                                            return "captcha_fail"
                             else:
-                                log_msg("❌ OpenCV could not find hole.", level="step")
+                                log_msg("❌ OpenCV could not find hole.", level="main")
+                                return "captcha_fail"
                         else:
-                            log_msg("❌ Could not screenshot puzzle.", level="step")
+                            log_msg("❌ Captcha Image Not Found.", level="main")
+                            return "captcha_fail"
 
-                    # Final Verification
+                    # Check final success again
                     if await page.get_by_text("s", exact=False).count() > 0:
-                        log_msg("✅ Success! Code Sent.", level="main")
                         return "success"
                     else:
-                        log_msg("❌ Captcha Failed or Timeout.", level="main")
                         return "captcha_fail"
 
                 else: return "retry"

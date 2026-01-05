@@ -1,43 +1,29 @@
-FROM python:3.11-bookworm
+# 1. Official Playwright Image (Heavy & Ready)
+FROM mcr.microsoft.com/playwright/python:v1.40.0-jammy
 
-# 1. Install System Dependencies (Desktop & Chrome)
-# Hum heavy dependencies daal rahe hain taake browser crash na ho
-RUN apt-get update && apt-get install -y \
-    chromium \
-    ffmpeg \
-    libnss3 \
-    libnss3 \
-    libnspr4 \
-    libatk1.0-0 \
-    libatk-bridge2.0-0 \
-    libcups2 \
-    libdrm2 \
-    libxkbcommon0 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxfixes3 \
-    libxrandr2 \
-    libgbm1 \
-    libasound2 \
-    libpango-1.0-0 \
-    libcairo2 \
-    fonts-liberation \
-    fonts-noto-color-emoji \
-    && rm -rf /var/lib/apt/lists/*
-
+# 2. Setup Work Directory
 WORKDIR /app
 
-# 2. Install Python Packages
+# 3. 🔥 Install System Dependencies for OpenCV & AI (Zaroori hai)
+RUN apt-get update && apt-get install -y \
+    libgl1 \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# 4. Copy Requirements
 COPY requirements.txt .
+
+# 5. Install Python Packages (Heavy Installation)
 RUN pip install --no-cache-dir -U -r requirements.txt
 
-# 3. Install Playwright Browsers
+# 6. Install Browsers (Chromium Only)
 RUN playwright install chromium
-RUN playwright install-deps
 
-# 4. Copy Code
+# 7. Copy Your Code
 COPY . .
+
+# 8. Create Captures Folder & Permissions
 RUN mkdir -p captures && chmod 777 captures
 
-# 5. Start Command
+# 9. Start Command
 CMD sh -c "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}"

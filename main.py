@@ -4,7 +4,7 @@ import asyncio
 import random
 import cv2
 import numpy as np
-import ddddocr  # 🔥 CHINESE LIBRARY
+import ddddocr
 from rembg import remove
 from datetime import datetime
 from typing import Optional
@@ -14,14 +14,17 @@ from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from playwright.async_api import async_playwright
 import uvicorn
+import shutil
 
-# --- CONFIGURATION ---
-CAPTURE_DIR = "./captures"
-NUMBERS_FILE = "numbers.txt"
-SUCCESS_FILE = "success.txt"
-FAILED_FILE = "failed.txt"
-PROXY_FILE = "proxies.txt"
-BASE_URL = "https://id8.cloud.huawei.com/" 
+# --- 🔥 SYSTEM PATHS (BULLETPROOF) 🔥 ---
+# Get the absolute path of the directory where main.py is located
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CAPTURE_DIR = os.path.join(BASE_DIR, "captures")
+NUMBERS_FILE = os.path.join(BASE_DIR, "numbers.txt")
+SUCCESS_FILE = os.path.join(BASE_DIR, "success.txt")
+FAILED_FILE = os.path.join(BASE_DIR, "failed.txt")
+PROXY_FILE = os.path.join(BASE_DIR, "proxies.txt")
+BASE_URL = "https://id8.cloud.huawei.com/CAS/portal/login.html"
 
 app = FastAPI()
 if not os.path.exists(CAPTURE_DIR): os.makedirs(CAPTURE_DIR)
@@ -44,7 +47,6 @@ def log_msg(message, level="step"):
     logs.insert(0, entry)
     if len(logs) > 500: logs.pop()
 
-# 🔥 FIXED UPLOAD/COUNT LOGIC 🔥
 def count_file_lines(filepath):
     if not os.path.exists(filepath): return 0
     try:
@@ -53,19 +55,25 @@ def count_file_lines(filepath):
     except: return 0
 
 def get_current_number_from_file():
-    if not os.path.exists(NUMBERS_FILE): return None
+    if not os.path.exists(NUMBERS_FILE):
+        log_msg(f"⚠️ DEBUG: File not found at {NUMBERS_FILE}", level="step")
+        return None
     try:
         with open(NUMBERS_FILE, "r", encoding="utf-8", errors="ignore") as f:
             lines = [l.strip() for l in f.readlines() if l.strip()]
-        return lines[0] if lines else None
-    except: return None
+        if not lines:
+            log_msg("⚠️ DEBUG: File exists but is EMPTY!", level="step")
+            return None
+        return lines[0]
+    except Exception as e:
+        log_msg(f"⚠️ Read Error: {e}", level="step")
+        return None
 
 def remove_current_number():
     if not os.path.exists(NUMBERS_FILE): return
     try:
         with open(NUMBERS_FILE, "r", encoding="utf-8", errors="ignore") as f:
             lines = f.readlines()
-        # Remove first non-empty line
         new_lines = []
         removed = False
         for line in lines:
@@ -130,11 +138,38 @@ async def update_settings(country: str = Form(...), manual_proxy: Optional[str] 
 
 @app.post("/upload_numbers")
 async def upload_numbers(file: UploadFile = File(...)):
-    # Overwrite mode correctly implemented
-    with open(NUMBERS_FILE, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
-    count = count_file_lines(NUMBERS_FILE)
-    log_msg(f"📂 Numbers Uploaded. Total Count: {count}", level="main")
-    return {"status": "saved", "count": count}
+    try:
+        content = await file.read() # Read full content to memory
+        text_content = content.decode("utf-8", errors="ignore")
+        
+        # Split by newlines and filter empty lines
+        lines = [l.strip() for l in text_content.splitlines() if l.strip()]
+        
+        # Save clean content
+        with open(NUMBERS_FILE, "w", encoding="utf-8") as f:
+            for line in lines:
+                f.write(f"{line}\n")
+        
+        count = len(lines)
+        log_msg(f"📂 Numbers Uploaded. Path: {NUMBERS_FILE}", level="main")
+        log_msg(f"🔢 Total Lines Found: {count}", level="main")
+        
+        if count > 0:
+            log_msg(f"👀 First Number: {lines[0]}", level="step")
+        else:
+            log_msg("⚠️ WARNING: File is empty after processing!", level="main")
+            
+        return {"status": "saved", "count": count}
+    except Exception as e:
+        log_msg(f"❌ Upload Error: {e}", level="main")
+        return {"error": str(e)}
+
+@app.post("/upload_proxies")
+async def upload_proxies(file: UploadFile = File(...)):
+    try:
+        with open(PROXY_FILE, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
+        return {"status": "saved"}
+    except: return {"status": "error"}
 
 @app.post("/start")
 async def start_bot(bt: BackgroundTasks):
@@ -210,24 +245,17 @@ def solve_puzzle_chinese(image_path, attempt_id, slider_y_pos=None):
                             if abs(y - slider_y_pos) < 25: 
                                 valid_targets.append((x, y, w, h))
                             else:
-                                # Draw Red Box on Decoy (Fake)
                                 cv2.rectangle(img, (x, y), (x+w, y+h), (0, 0, 255), 2)
                         else:
                             valid_targets.append((x, y, w, h))
                 
                 if valid_targets:
-                    # Pick best target (usually first valid)
                     best_target = valid_targets[0]
                     best_x = best_target[0]
                     bx, by, bw, bh = best_target
                     
                     method_used = "Chinese_AI_Lock"
-                    
-                    # 🔥 DRAW BLUE BOX ON TARGET (VISUAL CONFIRMATION) 🔥
-                    # (Blue in BGR is 255, 0, 0)
                     cv2.rectangle(img, (bx, by), (bx+bw, by+bh), (255, 0, 0), 3)
-                    
-                    # Draw text
                     cv2.putText(img, "TARGET", (bx, by-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
 
         except Exception as e:

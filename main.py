@@ -4,11 +4,11 @@ import asyncio
 import random
 import cv2
 import numpy as np
-import ddddocr  # 🔥 THE CHINESE LIBRARY
+import ddddocr  # 🔥 CHINESE LIBRARY
 from rembg import remove
 from datetime import datetime
-from typing import Optional # 🔥 FIXED: Added this
-from urllib.parse import urlparse # 🔥 FIXED: Added this
+from typing import Optional
+from urllib.parse import urlparse
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -33,7 +33,7 @@ logs = []
 CURRENT_RETRIES = 0 
 PROXY_INDEX = 0
 
-# 🔥 INITIALIZE CHINESE OCR ENGINE 🔥
+# 🔥 INITIALIZE CHINESE ENGINE 🔥
 ocr = ddddocr.DdddOcr(det=False, ocr=False, show_ad=False)
 
 # --- HELPERS ---
@@ -44,26 +44,41 @@ def log_msg(message, level="step"):
     logs.insert(0, entry)
     if len(logs) > 500: logs.pop()
 
+# 🔥 FIXED UPLOAD/COUNT LOGIC 🔥
 def count_file_lines(filepath):
+    if not os.path.exists(filepath): return 0
     try:
-        if not os.path.exists(filepath): return 0
-        with open(filepath, "r") as f: return len([l for l in f.readlines() if l.strip()])
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+            return len([line for line in f if line.strip()])
     except: return 0
 
 def get_current_number_from_file():
-    if os.path.exists(NUMBERS_FILE):
-        with open(NUMBERS_FILE, "r") as f: lines = [l.strip() for l in f.readlines() if l.strip()]
-        if lines: return lines[0]
-    return None
+    if not os.path.exists(NUMBERS_FILE): return None
+    try:
+        with open(NUMBERS_FILE, "r", encoding="utf-8", errors="ignore") as f:
+            lines = [l.strip() for l in f.readlines() if l.strip()]
+        return lines[0] if lines else None
+    except: return None
 
 def remove_current_number():
-    if os.path.exists(NUMBERS_FILE):
-        with open(NUMBERS_FILE, "r") as f: lines = f.readlines()
-        if lines:
-            with open(NUMBERS_FILE, "w") as f: f.writelines(lines[1:])
+    if not os.path.exists(NUMBERS_FILE): return
+    try:
+        with open(NUMBERS_FILE, "r", encoding="utf-8", errors="ignore") as f:
+            lines = f.readlines()
+        # Remove first non-empty line
+        new_lines = []
+        removed = False
+        for line in lines:
+            if line.strip() and not removed:
+                removed = True
+                continue
+            new_lines.append(line)
+        with open(NUMBERS_FILE, "w", encoding="utf-8") as f:
+            f.writelines(new_lines)
+    except: pass
 
 def save_to_file(filename, data):
-    with open(filename, "a") as f: f.write(f"{data}\n")
+    with open(filename, "a", encoding="utf-8") as f: f.write(f"{data}\n")
 
 def get_current_proxy():
     global PROXY_INDEX
@@ -115,9 +130,11 @@ async def update_settings(country: str = Form(...), manual_proxy: Optional[str] 
 
 @app.post("/upload_numbers")
 async def upload_numbers(file: UploadFile = File(...)):
+    # Overwrite mode correctly implemented
     with open(NUMBERS_FILE, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
-    log_msg(f"📂 Numbers File Uploaded ({file.filename})", level="main")
-    return {"status": "saved"}
+    count = count_file_lines(NUMBERS_FILE)
+    log_msg(f"📂 Numbers Uploaded. Total Count: {count}", level="main")
+    return {"status": "saved", "count": count}
 
 @app.post("/start")
 async def start_bot(bt: BackgroundTasks):
@@ -155,7 +172,7 @@ async def show_red_dot(page, x, y):
         """)
     except: pass
 
-# --- 🔥 CHINESE SOLVER + DECOY FILTER 🔥 ---
+# --- 🔥 CHINESE SOLVER WITH VISUAL DEBUG 🔥 ---
 def solve_puzzle_chinese(image_path, attempt_id, slider_y_pos=None):
     try:
         with open(image_path, "rb") as i: img_bytes = i.read()
@@ -166,9 +183,9 @@ def solve_puzzle_chinese(image_path, attempt_id, slider_y_pos=None):
         best_x = 0
         method_used = "None"
         
-        # --- ENGINE: Hybrid (REMBG + Contour + Decoy Logic) ---
+        # --- LOGIC: Hybrid (Rembg + Contour + Chinese Logic) ---
         try:
-            output_data = remove(img_bytes)
+            output_data = remove(img_bytes) # Remove Background
             nparr_ai = np.frombuffer(output_data, np.uint8)
             img_ai = cv2.imdecode(nparr_ai, cv2.IMREAD_UNCHANGED)
             
@@ -181,41 +198,45 @@ def solve_puzzle_chinese(image_path, attempt_id, slider_y_pos=None):
                 for contour in contours:
                     x, y, w, h = cv2.boundingRect(contour)
                     
-                    # 1. Square Check (Avoid Boats/Cars)
+                    # 1. Shape & Size Filters
                     aspect_ratio = float(w) / h
                     is_square = 0.8 <= aspect_ratio <= 1.3
-                    
-                    # 2. Size Check
                     is_valid_size = 35 < w < 90 and 35 < h < 90
-                    
-                    # 3. Position Check (Not at start)
                     is_not_start = x > 60
                     
                     if is_square and is_valid_size and is_not_start:
-                        # 🔥 DECOY CHECK (Y-AXIS ALIGNMENT) 🔥
+                        # 2. Decoy Check (Y-Axis)
                         if slider_y_pos:
-                            # Allow +/- 20px deviation
-                            if abs(y - slider_y_pos) < 20: 
+                            if abs(y - slider_y_pos) < 25: 
                                 valid_targets.append((x, y, w, h))
-                                log_msg(f"✅ Valid Candidate at Y={y} (Slider Y={slider_y_pos})", level="step")
                             else:
-                                log_msg(f"⚠️ Decoy Found at Y={y} (Too far from Slider Y={slider_y_pos})", level="step")
-                                cv2.rectangle(img, (x, y), (x+w, y+h), (0, 0, 255), 2) # Red for decoy
+                                # Draw Red Box on Decoy (Fake)
+                                cv2.rectangle(img, (x, y), (x+w, y+h), (0, 0, 255), 2)
                         else:
                             valid_targets.append((x, y, w, h))
                 
                 if valid_targets:
-                    # Sort by X usually works as decoy is often far right or random
+                    # Pick best target (usually first valid)
                     best_target = valid_targets[0]
                     best_x = best_target[0]
-                    method_used = "AI_Decoy_Filtered"
-                    cv2.rectangle(img, (best_target[0], best_target[1]), (best_target[0]+best_target[2], best_target[1]+best_target[3]), (0, 255, 0), 2)
+                    bx, by, bw, bh = best_target
+                    
+                    method_used = "Chinese_AI_Lock"
+                    
+                    # 🔥 DRAW BLUE BOX ON TARGET (VISUAL CONFIRMATION) 🔥
+                    # (Blue in BGR is 255, 0, 0)
+                    cv2.rectangle(img, (bx, by), (bx+bw, by+bh), (255, 0, 0), 3)
+                    
+                    # Draw text
+                    cv2.putText(img, "TARGET", (bx, by-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
 
         except Exception as e:
-            log_msg(f"Chinese Engine Err: {e}")
+            log_msg(f"Chinese Logic Err: {e}")
 
+        # Save the Debug Image
         cv2.putText(img, f"Method: {method_used}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
         cv2.imwrite(f"{CAPTURE_DIR}/DEBUG_Try{attempt_id}_Chinese.jpg", img)
+        log_msg(f"📸 Debug Image Saved: DEBUG_Try{attempt_id}_Chinese.jpg", level="step")
         
         return best_x
 
@@ -338,19 +359,16 @@ async def run_huawei_session(phone, proxy):
                                 await capture_step(page, f"Try_{attempt_count}_Start")
                                 await puzzle_img.screenshot(path="temp_puzzle.png")
                                 
-                                # 🔥 GET SLIDER Y POSITION FOR DECOY FILTERING 🔥
+                                # 🔥 GET SLIDER Y POSITION 🔥
                                 slider_y_relative = 0
                                 slider = page.locator(".geetest_slider_button").or_(page.locator(".nc_iconfont.btn_slide")).or_(page.locator(".yidun_slider"))
                                 if await slider.count() > 0:
                                     slider_box = await slider.bounding_box()
                                     img_box = await puzzle_img.bounding_box()
-                                    
-                                    # Calculate Slider Y relative to Image Top
                                     if slider_box and img_box:
                                         slider_center_y = slider_box['y'] + (slider_box['height'] / 2)
                                         img_top_y = img_box['y']
                                         slider_y_relative = slider_center_y - img_top_y
-                                        log_msg(f"🎯 Expected Hole Y-Level: ~{slider_y_relative}px", level="step")
 
                                 # Scale Calc
                                 box_img = await puzzle_img.bounding_box()
@@ -359,9 +377,8 @@ async def run_huawei_session(phone, proxy):
                                 raw_width = temp_img_cv.shape[1]
                                 scale_ratio = actual_width / raw_width
                                 
-                                # 🔥 CHINESE SOLVE WITH DECOY FILTER 🔥
+                                # 🔥 SOLVE 🔥
                                 raw_slider_y = slider_y_relative / scale_ratio if slider_y_relative > 0 else None
-                                
                                 distance_raw = solve_puzzle_chinese("temp_puzzle.png", attempt_count, raw_slider_y)
                                 
                                 if distance_raw > 0:

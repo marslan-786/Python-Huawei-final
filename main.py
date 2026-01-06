@@ -121,6 +121,14 @@ def parse_proxy_string(proxy_str):
     except: return None
 
 # --- VISUALS ---
+async def capture_step(page, step_name):
+    """Takes a screenshot to show user what is happening LIVE"""
+    if not BOT_RUNNING: return
+    ts = datetime.now().strftime("%H%M%S")
+    filename = f"{CAPTURE_DIR}/{ts}_{step_name}.jpg"
+    try: await page.screenshot(path=filename)
+    except: pass
+
 async def show_red_dot(page, x, y):
     try:
         await page.evaluate(f"""
@@ -178,41 +186,8 @@ def call_all_ais(image_path, attempt_num):
         results["Claude"] = data['target_x'] - data['slider_x']
     except: pass
     
-    # Log Results
     log_msg(f"🧠 AI Results: Gemini={results['Gemini']}, Groq={results['Groq']}, Claude={results['Claude']}", level="step")
     return results
-
-# --- 🛠️ SMART NAVIGATOR ---
-async def smart_click_and_verify(page, click_selector, verify_selector, action_name):
-    for i in range(3):
-        try:
-            log_msg(f"🖱️ {action_name} (Try {i+1})...", level="step")
-            # Visual Click
-            el = page.locator(click_selector).first
-            if await el.count() > 0:
-                await execute_click_visual(page, el)
-                # Wait for result
-                try:
-                    await page.wait_for_selector(verify_selector, timeout=5000, state="visible")
-                    return True
-                except:
-                    log_msg(f"⚠️ Clicked but next element not found.", level="step")
-            else:
-                log_msg(f"⚠️ Element {click_selector} not found.", level="step")
-            await asyncio.sleep(1)
-        except Exception as e:
-            log_msg(f"⚠️ Error {action_name}: {e}", level="step")
-    return False
-
-async def execute_click_visual(page, element):
-    try:
-        await element.scroll_into_view_if_needed()
-        box = await element.bounding_box()
-        if box:
-            cx = box['x'] + box['width'] / 2; cy = box['y'] + box['height'] / 2
-            await show_red_dot(page, cx, cy)
-            await element.click()
-    except: pass
 
 # --- WORKER ---
 async def master_loop():
@@ -239,27 +214,63 @@ async def master_loop():
 
                 # 1. GOTO URL
                 log_msg("🌍 Opening ID8...", level="step")
-                await page.goto(BASE_URL, timeout=60000)
-                
-                # 2. CLICK REGISTER
-                if not await smart_click_and_verify(page, "text=Register", "text=Country/Region", "Click Register"):
-                    log_msg("💀 Register Page Fail.", level="main"); await browser.close(); continue
+                try:
+                    await page.goto(BASE_URL, timeout=60000)
+                    log_msg("⏳ Waiting 5s for Page Load...", level="step")
+                    await asyncio.sleep(5) # Request: Wait 5s
+                    await capture_step(page, "1_Page_Loaded")
+                except:
+                    log_msg("💀 Page Load Timeout.", level="main"); await browser.close(); continue
 
-                # 3. SELECT PHONE TAB
-                if not await smart_click_and_verify(page, "text=Register with phone number", "input[type='tel']", "Select Phone Tab"):
-                    log_msg("💀 Phone Tab Fail.", level="main"); await browser.close(); continue
+                # 2. CLICK REGISTER (Optional check)
+                # Sometimes page opens directly on login, sometimes register.
+                if await page.get_by_text("Register").count() > 0:
+                    log_msg("🖱️ Clicking Register...", level="step")
+                    await page.get_by_text("Register").first.click()
+                    await capture_step(page, "2_Register_Clicked")
+                    log_msg("⏳ Waiting 3s after Register click...", level="step")
+                    await asyncio.sleep(3) # Request: Wait 3s
+
+                # 3. SELECT PHONE TAB (Flexible Logic)
+                # First, check if input is ALREADY visible. If so, skip click.
+                if await page.locator("input[type='tel']").is_visible():
+                    log_msg("✅ Phone Input already visible.", level="step")
+                else:
+                    log_msg("🖱️ Clicking Phone Tab...", level="step")
+                    tab = page.get_by_text("Register with phone number")
+                    if await tab.count() > 0:
+                        await tab.first.click()
+                        await asyncio.sleep(2)
+                        await capture_step(page, "3_Phone_Tab_Clicked")
+                    else:
+                        log_msg("⚠️ Phone Tab not found, checking input...", level="step")
+
+                # Verify Input Exists
+                if not await page.locator("input[type='tel']").is_visible():
+                    log_msg("💀 Phone Input Field Missing!", level="main")
+                    await capture_step(page, "Error_No_Input")
+                    await browser.close(); continue
 
                 # 4. INPUT PHONE
                 log_msg("⌨️ Typing Number...", level="step")
                 clean_phone = current_number.replace("+", "").replace(" ", "")
                 if clean_phone.startswith("7") and len(clean_phone) > 10: clean_phone = clean_phone[1:]
                 await page.locator("input[type='tel']").fill(clean_phone)
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(1)
+                await capture_step(page, "4_Number_Typed")
 
                 # 5. CLICK GET CODE
-                if not await smart_click_and_verify(page, "text=Get code", ".geetest_window, .nc_scale, img[src*='captcha']", "Click Get Code"):
-                    log_msg("⚠️ Captcha didn't pop instantly. Waiting...", level="step")
-                    await asyncio.sleep(5)
+                code_btn = page.get_by_text("Get code", exact=True)
+                if await code_btn.count() > 0:
+                    log_msg("🖱️ Clicking Get Code...", level="step")
+                    await code_btn.first.click()
+                    log_msg("⏳ Hard Wait: 10s for Captcha...", level="step")
+                    await asyncio.sleep(10) # Request: Wait 10s
+                    await capture_step(page, "5_After_Get_Code")
+                else:
+                    log_msg("💀 Get Code Button Missing!", level="main")
+                    await capture_step(page, "Error_No_GetCode")
+                    await browser.close(); continue
 
                 # --- 🧩 CAPTCHA LOGIC ---
                 captcha_solved = False
@@ -300,6 +311,7 @@ async def master_loop():
                                 
                                 log_msg("⏳ Verifying (10s)...", level="step")
                                 await asyncio.sleep(10)
+                                await capture_step(page, f"6_Verify_Round_{attempt+1}")
                                 
                                 if await puzzle.count() == 0 or not await puzzle.is_visible():
                                     log_msg("🎉 CAPTCHA SOLVED!", level="main")
@@ -313,14 +325,17 @@ async def master_loop():
                 # --- RESULT CHECK ---
                 if not captcha_solved:
                     log_msg("🔥🔥 ALL AI FAILED. KILL SWITCH.", level="main")
+                    await capture_step(page, "Error_Final_Fail")
                     BOT_RUNNING = False # KILL SWITCH
                     save_to_file(FAILED_FILE, current_number)
                 elif await page.get_by_text("sent", exact=False).count() > 0:
                     log_msg("✅ SMS SENT!", level="main")
+                    await capture_step(page, "7_Success")
                     save_to_file(SUCCESS_FILE, current_number)
                     remove_current_number()
                 else:
                     log_msg("⚠️ Captcha gone but no SMS msg?", level="step")
+                    await capture_step(page, "8_Unknown_State")
                     remove_current_number() # Assume success?
 
                 await browser.close()
@@ -334,7 +349,7 @@ async def read_index(): return FileResponse('index.html')
 
 @app.get("/status")
 async def get_status():
-    files = sorted(glob.glob(f'{CAPTURE_DIR}/*.png'), key=os.path.getmtime, reverse=True)[:15]
+    files = sorted(glob.glob(f'{CAPTURE_DIR}/*.jpg') + glob.glob(f'{CAPTURE_DIR}/*.png'), key=os.path.getmtime, reverse=True)[:15]
     images = [f"/captures/{os.path.basename(f)}" for f in files]
     stats = { "remaining": count_file_lines(NUMBERS_FILE), "success": count_file_lines(SUCCESS_FILE), "failed": count_file_lines(FAILED_FILE) }
     return JSONResponse({"logs": logs[:50], "images": images, "running": BOT_RUNNING, "stats": stats})

@@ -217,45 +217,59 @@ async def master_loop():
                 try:
                     await page.goto(BASE_URL, timeout=60000)
                     log_msg("⏳ Waiting 5s for Page Load...", level="step")
-                    await asyncio.sleep(5) # Request: Wait 5s
+                    await asyncio.sleep(5)
                     await capture_step(page, "1_Page_Loaded")
                 except:
                     log_msg("💀 Page Load Timeout.", level="main"); await browser.close(); continue
 
-                # 2. CLICK REGISTER (Optional check)
-                # Sometimes page opens directly on login, sometimes register.
-                if await page.get_by_text("Register").count() > 0:
-                    log_msg("🖱️ Clicking Register...", level="step")
-                    await page.get_by_text("Register").first.click()
-                    await capture_step(page, "2_Register_Clicked")
-                    log_msg("⏳ Waiting 3s after Register click...", level="step")
-                    await asyncio.sleep(3) # Request: Wait 3s
-
-                # 3. SELECT PHONE TAB (Flexible Logic)
-                # First, check if input is ALREADY visible. If so, skip click.
-                if await page.locator("input[type='tel']").is_visible():
-                    log_msg("✅ Phone Input already visible.", level="step")
+                # 2. CLICK REGISTER (Only if not already on register form)
+                # If we see "Register HUAWEI ID" as a title, we are already there.
+                header_exists = await page.get_by_text("Register HUAWEI ID", exact=True).count() > 0
+                
+                if not header_exists:
+                    if await page.get_by_text("Register").count() > 0:
+                        log_msg("🖱️ Clicking Register Link...", level="step")
+                        await page.get_by_text("Register").first.click()
+                        await capture_step(page, "2_Register_Clicked")
+                        log_msg("⏳ Waiting 3s after Register click...", level="step")
+                        await asyncio.sleep(3)
                 else:
-                    log_msg("🖱️ Clicking Phone Tab...", level="step")
+                    log_msg("✅ Already on Register Page.", level="step")
+
+                # 3. SELECT PHONE TAB & FIND INPUT
+                # We use a smart OR locator: look for type='tel' OR placeholder='Phone'
+                # This fixes the issue where the bot couldn't find the input
+                phone_input = page.locator("input[type='tel']").or_(page.get_by_placeholder("Phone"))
+
+                if await phone_input.count() > 0 and await phone_input.is_visible():
+                     log_msg("✅ Phone Input Found!", level="step")
+                     # Click tab just in case, but rely on input visibility
+                     tab = page.get_by_text("Register with phone number")
+                     if await tab.count() > 0:
+                         await tab.first.click()
+                         await asyncio.sleep(1)
+                else:
+                    # Try clicking tab to make input appear
+                    log_msg("🖱️ Clicking Phone Tab to reveal input...", level="step")
                     tab = page.get_by_text("Register with phone number")
                     if await tab.count() > 0:
                         await tab.first.click()
                         await asyncio.sleep(2)
                         await capture_step(page, "3_Phone_Tab_Clicked")
-                    else:
-                        log_msg("⚠️ Phone Tab not found, checking input...", level="step")
-
-                # Verify Input Exists
-                if not await page.locator("input[type='tel']").is_visible():
-                    log_msg("💀 Phone Input Field Missing!", level="main")
-                    await capture_step(page, "Error_No_Input")
-                    await browser.close(); continue
+                    
+                    # Check again
+                    if await phone_input.count() == 0:
+                        log_msg("💀 Phone Input Field Missing! (Check Screenshot)", level="main")
+                        await capture_step(page, "Error_No_Input")
+                        await browser.close(); continue
 
                 # 4. INPUT PHONE
                 log_msg("⌨️ Typing Number...", level="step")
                 clean_phone = current_number.replace("+", "").replace(" ", "")
                 if clean_phone.startswith("7") and len(clean_phone) > 10: clean_phone = clean_phone[1:]
-                await page.locator("input[type='tel']").fill(clean_phone)
+                
+                # Fill the found input
+                await phone_input.first.fill(clean_phone)
                 await asyncio.sleep(1)
                 await capture_step(page, "4_Number_Typed")
 
@@ -265,7 +279,7 @@ async def master_loop():
                     log_msg("🖱️ Clicking Get Code...", level="step")
                     await code_btn.first.click()
                     log_msg("⏳ Hard Wait: 10s for Captcha...", level="step")
-                    await asyncio.sleep(10) # Request: Wait 10s
+                    await asyncio.sleep(10)
                     await capture_step(page, "5_After_Get_Code")
                 else:
                     log_msg("💀 Get Code Button Missing!", level="main")

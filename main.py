@@ -18,32 +18,29 @@ from PIL import Image
 import cv2
 import numpy as np
 
-# --- 🧠 NEW AI LIBRARIES ---
-# If these fail, the bot will CRASH intentionally so you know to install them.
-from google import genai  # 🔥 The NEW Library
-from anthropic import Anthropic
-from groq import Groq
+# --- 🧠 AI CLIENTS SETUP ---
+AI_LIBS_INSTALLED = False
+try:
+    from google import genai
+    from groq import Groq
+    AI_LIBS_INSTALLED = True
+except ImportError as e:
+    print(f"❌ CRITICAL: Libraries missing! Run: pip install google-genai groq")
 
 # 🔑 API KEYS
 KEY_GEMINI = "AIzaSyD2kBM01JsV1GEYPFbo6U0iayd49bxASo0"
-KEY_CLAUDE = "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"
 KEY_GROQ = "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"
 
-# --- INIT CLIENTS (Global) ---
-print("🔌 Initializing AI Clients...")
+# Init Clients
+client_gemini = None
+client_groq = None
+
 try:
-    # 1. Gemini (New Client Style)
-    client_gemini = genai.Client(api_key=KEY_GEMINI)
-    
-    # 2. Claude
-    client_claude = Anthropic(api_key=KEY_CLAUDE)
-    
-    # 3. Groq
-    client_groq = Groq(api_key=KEY_GROQ)
-    print("✅ All AI Clients Connected.")
+    if AI_LIBS_INSTALLED:
+        client_gemini = genai.Client(api_key=KEY_GEMINI)
+        client_groq = Groq(api_key=KEY_GROQ)
 except Exception as e:
-    print(f"❌ FATAL ERROR in Client Init: {e}")
-    exit(1) # Stop app if keys are wrong
+    print(f"❌ Client Init Error: {e}")
 
 # --- CONFIG ---
 BASE_URL = "https://id8.cloud.huawei.com/CAS/portal/login.html"
@@ -154,7 +151,7 @@ async def show_red_dot(page, x, y):
         """)
     except: pass
 
-# --- 🧠 MULTI-AI BRAIN (NEW LIBRARY LOGIC) ---
+# --- 🧠 MULTI-AI BRAIN (GEMINI 2.0 + GROQ BACKUP) ---
 def call_all_ais(image_path, attempt_num):
     log_msg(f"📡 AI Round {attempt_num} Requesting...", level="step")
     
@@ -166,63 +163,48 @@ def call_all_ais(image_path, attempt_num):
     Do not explain. Just JSON.
     """
     
-    results = {"Gemini": None, "Groq": None, "Claude": None}
+    results = {"Gemini": None, "Groq": None}
     
-    # 1. Gemini (NEW google-genai Library)
+    # 1. Gemini (Primary)
     try:
         img_pil = Image.open(image_path)
-        # 🔥 NEW SYNTAX for 2.0/2.5
         resp = client_gemini.models.generate_content(
             model="gemini-2.5-flash", 
             contents=[prompt_text, img_pil]
         )
-        
-        # Log Response for debugging
         if resp.text:
-            log_msg(f"🔹 Gemini Raw: {resp.text}", level="step") # Showing raw response
             clean_text = resp.text.replace("```json", "").replace("```", "").strip()
             data = json.loads(clean_text)
-            results["Gemini"] = data['target_x'] - data['slider_x']
-        else:
-            log_msg("❌ Gemini returned Empty Text", level="step")
-            
+            dist = data['target_x'] - data['slider_x']
+            results["Gemini"] = dist
+            log_msg(f"✅ Gemini Found: {dist}px (S:{data['slider_x']}, T:{data['target_x']})", level="step")
     except Exception as e:
         log_msg(f"❌ Gemini Error: {e}", level="step")
 
-    # 2. Groq
+    # 2. Groq (Backup - Using 11b-vision explicitly)
     try:
-        img_b64 = encode_image(image_path)
-        resp = client_groq.chat.completions.create(
-            messages=[{"role": "user", "content": [{"type": "text", "text": prompt_text}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}]}],
-            model="llama-3.2-90b-vision-preview" 
-        )
-        raw_groq = resp.choices[0].message.content
-        log_msg(f"🔸 Groq Raw: {raw_groq}", level="step") # Showing raw response
-        data = json.loads(raw_groq.replace("```json", "").replace("```", "").strip())
-        results["Groq"] = data['target_x'] - data['slider_x']
+        # Only try Groq if Gemini failed or for comparison
+        if results["Gemini"] is None:
+            img_b64 = encode_image(image_path)
+            resp = client_groq.chat.completions.create(
+                messages=[{"role": "user", "content": [{"type": "text", "text": prompt_text}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}]}],
+                model="llama-3.2-11b-vision-preview" 
+            )
+            raw_groq = resp.choices[0].message.content
+            data = json.loads(raw_groq.replace("```json", "").replace("```", "").strip())
+            dist = data['target_x'] - data['slider_x']
+            results["Groq"] = dist
+            log_msg(f"✅ Groq Found: {dist}px", level="step")
     except Exception as e:
-        log_msg(f"❌ Groq Error: {e}", level="step")
-
-    # 3. Claude
-    try:
-        img_b64 = encode_image(image_path)
-        resp = client_claude.messages.create(
-            model="claude-3-haiku-20240307", max_tokens=100,
-            messages=[{"role": "user", "content": [{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": img_b64}}, {"type": "text", "text": prompt_text}]}]
-        )
-        raw_claude = resp.content[0].text
-        log_msg(f"🔺 Claude Raw: {raw_claude}", level="step")
-        data = json.loads(raw_claude.replace("```json", "").replace("```", "").strip())
-        results["Claude"] = data['target_x'] - data['slider_x']
-    except Exception as e:
-        log_msg(f"❌ Claude Error: {e}", level="step")
+        # Silently fail Groq to keep logs clean if model is dead
+        pass
     
     return results
 
 # --- WORKER ---
 async def master_loop():
     global BOT_RUNNING
-    log_msg("🚀 SYSTEM STARTED: ID8 Russia (New GenAI Lib)", level="main")
+    log_msg("🚀 SYSTEM STARTED: Gemini Only Mode", level="main")
     
     while BOT_RUNNING:
         current_number = get_current_number_from_file()
@@ -265,7 +247,7 @@ async def master_loop():
                 else:
                     log_msg("✅ Already on Register Page.", level="step")
 
-                # 3. PHONE INPUT (FIXED SELECTOR)
+                # 3. PHONE INPUT
                 phone_input = page.get_by_placeholder("Phone")
                 
                 if not await phone_input.is_visible():
@@ -286,7 +268,7 @@ async def master_loop():
                     await asyncio.sleep(1)
                     await capture_step(page, "4_Number_Typed")
                 else:
-                    log_msg("💀 Phone Input Missing! (Placeholder 'Phone' not found)", level="main")
+                    log_msg("💀 Phone Input Missing!", level="main")
                     await capture_step(page, "Error_No_Input")
                     await browser.close(); continue
 
@@ -305,11 +287,9 @@ async def master_loop():
 
                 # --- 🧩 CAPTCHA LOGIC ---
                 captcha_solved = False
-                ai_order = ["Gemini", "Groq", "Claude"]
                 
-                for attempt in range(3):
-                    current_ai = ai_order[attempt]
-                    log_msg(f"⚔️ Round {attempt+1}: {current_ai}", level="main")
+                for attempt in range(3): # Try 3 times using Gemini
+                    log_msg(f"⚔️ Round {attempt+1}: Gemini", level="main")
                     
                     puzzle = page.locator("img[src*='captcha']").first
                     if await puzzle.count() == 0: puzzle = page.locator(".geetest_canvas_bg").first
@@ -325,11 +305,11 @@ async def master_loop():
                         
                         # Call AI
                         all_res = call_all_ais(sname, attempt+1)
-                        chosen_dist = all_res.get(current_ai)
+                        chosen_dist = all_res.get("Gemini") or all_res.get("Groq")
                         
                         if chosen_dist:
                             move_px = chosen_dist * scale_ratio
-                            log_msg(f"🤖 Moving {move_px:.2f}px ({current_ai})", level="step")
+                            log_msg(f"🤖 Moving {move_px:.2f}px", level="step")
                             
                             slider = page.locator(".geetest_slider_button").or_(page.locator(".nc_iconfont.btn_slide")).or_(page.locator(".yidun_slider"))
                             if await slider.count() > 0:
@@ -348,7 +328,7 @@ async def master_loop():
                                     log_msg("🎉 CAPTCHA SOLVED!", level="main")
                                     captcha_solved = True; break
                             else: log_msg("❌ Slider Missing", level="step")
-                        else: log_msg(f"❌ {current_ai} returned Null", level="step")
+                        else: log_msg(f"❌ Gemini returned Null", level="step")
                     else:
                         log_msg("ℹ️ No Captcha Found (Maybe Skipped)", level="step")
                         captcha_solved = True; break

@@ -3,80 +3,88 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Heavy Background Remover 🚀</title>
+    <title>Heavy Background Remover</title>
     <style>
         body { background-color: #0d1117; color: #c9d1d9; font-family: monospace; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
-        .container { text-align: center; border: 2px solid #30363d; padding: 40px; border-radius: 10px; background: #161b22; box-shadow: 0 0 20px rgba(0, 255, 0, 0.2); }
+        .container { text-align: center; border: 2px solid #30363d; padding: 40px; border-radius: 10px; background: #161b22; width: 400px; }
         h1 { color: #58a6ff; }
-        input[type="file"] { margin: 20px 0; padding: 10px; border: 1px dashed #30363d; width: 100%; box-sizing: border-box; }
-        button { background-color: #238636; color: white; border: none; padding: 15px 30px; font-size: 16px; border-radius: 5px; cursor: pointer; transition: 0.3s; width: 100%; font-family: monospace; font-weight: bold; }
-        button:hover { background-color: #2ea043; transform: scale(1.05); }
-        .loader { display: none; border: 5px solid #f3f3f3; border-top: 5px solid #58a6ff; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 20px auto; }
+        .status-box { margin: 20px 0; padding: 15px; border-radius: 5px; background: #21262d; border: 1px solid #30363d; }
+        button { width: 100%; padding: 15px; border-radius: 5px; border: none; font-weight: bold; cursor: pointer; margin-top: 10px; }
+        .btn-upload { background: #238636; color: white; }
+        .btn-download { background: #1f6feb; color: white; display: none; } /* Hidden by default */
+        .loader { display: none; margin: 20px auto; border: 4px solid #f3f3f3; border-top: 4px solid #58a6ff; border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-        .note { color: #8b949e; font-size: 12px; margin-top: 15px; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>🛠️ ULTIMATE REMOVER TOOL</h1>
-        <p>Test 6 Engines at once. Upload Captchas.</p>
+        <h1>🛠️ SERVER PROCESSOR</h1>
         
-        <form id="uploadForm">
-            <input type="file" id="fileInput" name="files" multiple accept="image/*" required>
-            <br>
-            <button type="submit" id="btn">🚀 UPLOAD & PROCESS</button>
-        </form>
+        <div class="status-box">
+            STATUS: <span id="statusText" style="color: #e3b341;">Checking...</span>
+            <div class="loader" id="loader"></div>
+        </div>
 
-        <div class="loader" id="loader"></div>
-        <p id="status" style="margin-top: 20px;"></p>
-        <p class="note">Note: Processing takes time depending on image count. Be patient!</p>
+        <div id="uploadArea">
+            <input type="file" id="fileInput" multiple accept="image/*" style="margin-bottom: 10px;">
+            <button class="btn-upload" onclick="uploadFiles()">🚀 START UPLOAD</button>
+        </div>
+
+        <a href="/download" id="downloadLink">
+            <button class="btn-download" id="downloadBtn">📥 DOWNLOAD RESULT (ZIP)</button>
+        </a>
     </div>
 
     <script>
-        const form = document.getElementById('uploadForm');
-        const btn = document.getElementById('btn');
+        const statusText = document.getElementById('statusText');
         const loader = document.getElementById('loader');
-        const status = document.getElementById('status');
+        const uploadArea = document.getElementById('uploadArea');
+        const downloadBtn = document.getElementById('downloadBtn');
 
-        form.onsubmit = async (e) => {
-            e.preventDefault();
+        // Check Status Every 3 Seconds
+        setInterval(checkStatus, 3000);
+
+        async function checkStatus() {
+            try {
+                const res = await fetch('/status');
+                const data = await res.json();
+                
+                statusText.innerText = data.message;
+
+                if (data.state === 'processing') {
+                    loader.style.display = 'block';
+                    uploadArea.style.display = 'none';
+                    downloadBtn.style.display = 'none';
+                    statusText.style.color = '#e3b341'; // Yellow
+                } 
+                else if (data.state === 'done') {
+                    loader.style.display = 'none';
+                    uploadArea.style.display = 'block'; // Allow new upload
+                    downloadBtn.style.display = 'block'; // Show Download
+                    statusText.style.color = '#2ea043'; // Green
+                } 
+                else {
+                    loader.style.display = 'none';
+                    uploadArea.style.display = 'block';
+                    downloadBtn.style.display = 'none';
+                    statusText.style.color = '#c9d1d9';
+                }
+            } catch (e) { console.log("Connection error"); }
+        }
+
+        async function uploadFiles() {
             const files = document.getElementById('fileInput').files;
-            if(files.length === 0) return;
-
-            btn.style.display = 'none';
-            loader.style.display = 'block';
-            status.innerText = `⏳ Processing ${files.length} images on 6 Heavy Engines...`;
+            if (files.length === 0) return alert("Select files first!");
 
             const formData = new FormData();
-            for (let i = 0; i < files.length; i++) {
-                formData.append('files', files[i]);
-            }
+            for (let i = 0; i < files.length; i++) formData.append('files', files[i]);
 
-            try {
-                const response = await fetch('/upload', {
-                    method: 'POST',
-                    body: formData
-                });
+            statusText.innerText = "Uploading...";
+            loader.style.display = 'block';
 
-                if (response.ok) {
-                    const blob = await response.blob();
-                    const url = window.URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = "Processed_Results.zip";
-                    document.body.appendChild(a);
-                    a.click();
-                    status.innerText = "✅ Done! Downloading ZIP...";
-                } else {
-                    status.innerText = "❌ Error in processing.";
-                }
-            } catch (error) {
-                status.innerText = "❌ Network Error.";
-            } finally {
-                btn.style.display = 'block';
-                loader.style.display = 'none';
-            }
-        };
+            await fetch('/upload', { method: 'POST', body: formData });
+            // No need to wait for response, the interval will pick up the 'processing' status
+        }
     </script>
 </body>
 </html>

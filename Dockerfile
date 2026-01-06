@@ -1,8 +1,9 @@
 FROM python:3.10-slim
 
 # Install system dependencies for OpenCV
+# FIX: 'libgl1-mesa-glx' is replaced by 'libgl1' in newer Debian versions
 RUN apt-get update && apt-get install -y \
-    libgl1-mesa-glx \
+    libgl1 \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 

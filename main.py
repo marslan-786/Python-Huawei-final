@@ -19,19 +19,28 @@ import cv2
 import numpy as np
 
 # --- 🧠 AI CLIENTS SETUP ---
-import google.generativeai as genai
-from anthropic import Anthropic
-from groq import Groq
+try:
+    import google.generativeai as genai
+    from anthropic import Anthropic
+    from groq import Groq
+    AI_LIBS_INSTALLED = True
+except ImportError as e:
+    print(f"❌ CRITICAL ERROR: AI Libraries missing! {e}")
+    AI_LIBS_INSTALLED = False
 
 # 🔑 API KEYS (Hardcoded)
 KEY_GEMINI = "AIzaSyD2kBM01JsV1GEYPFbo6U0iayd49bxASo0"
 KEY_CLAUDE = "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"
 KEY_GROQ = "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"
 
-# Init Clients
-genai.configure(api_key=KEY_GEMINI)
-anthropic_client = Anthropic(api_key=KEY_CLAUDE)
-groq_client = Groq(api_key=KEY_GROQ)
+# Init Clients (Wrap in try to catch init errors)
+try:
+    if AI_LIBS_INSTALLED:
+        genai.configure(api_key=KEY_GEMINI)
+        anthropic_client = Anthropic(api_key=KEY_CLAUDE)
+        groq_client = Groq(api_key=KEY_GROQ)
+except Exception as e:
+    print(f"❌ Client Init Error: {e}")
 
 # --- SYSTEM PATHS & CONFIG ---
 BASE_URL = "https://id8.cloud.huawei.com/CAS/portal/login.html" # 🇷🇺 Russia Server
@@ -122,7 +131,6 @@ def parse_proxy_string(proxy_str):
 
 # --- VISUALS ---
 async def capture_step(page, step_name):
-    """Takes a screenshot to show user what is happening LIVE"""
     if not BOT_RUNNING: return
     ts = datetime.now().strftime("%H%M%S")
     filename = f"{CAPTURE_DIR}/{ts}_{step_name}.jpg"
@@ -143,9 +151,14 @@ async def show_red_dot(page, x, y):
         """)
     except: pass
 
-# --- 🧠 MULTI-AI BRAIN ---
+# --- 🧠 MULTI-AI BRAIN (WITH ERROR LOGGING) ---
 def call_all_ais(image_path, attempt_num):
     log_msg(f"📡 AI Round {attempt_num} Requesting...", level="step")
+    
+    if not os.path.exists(image_path):
+        log_msg("❌ Error: Image file not found on disk!", level="main")
+        return {"Gemini": None}
+
     prompt = """
     Analyze this captcha image. It contains a 'puzzle slider' (piece) and a 'target hole'.
     I need the X-coordinates of the CENTER of both.
@@ -155,14 +168,17 @@ def call_all_ais(image_path, attempt_num):
     """
     results = {"Gemini": None, "Groq": None, "Claude": None}
     
-    # 1. Gemini
+    # 1. Gemini (Using 2.0 Flash Exp)
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # Using the latest 2.0 model or falling back to 1.5 if 2.0 is not available to your key
+        model = genai.GenerativeModel('gemini-2.0-flash-exp') 
         img_pil = Image.open(image_path)
         resp = model.generate_content([prompt, img_pil])
+        log_msg(f"🔹 Gemini Raw: {resp.text[:50]}...", level="step") # Debug raw response
         data = json.loads(resp.text.replace("```json", "").replace("```", "").strip())
         results["Gemini"] = data['target_x'] - data['slider_x']
-    except: pass
+    except Exception as e:
+        log_msg(f"❌ Gemini Error: {str(e)}", level="step") # PRINT THE ERROR
 
     # 2. Groq
     try:
@@ -173,7 +189,8 @@ def call_all_ais(image_path, attempt_num):
         )
         data = json.loads(resp.choices[0].message.content.replace("```json", "").replace("```", "").strip())
         results["Groq"] = data['target_x'] - data['slider_x']
-    except: pass
+    except Exception as e:
+        log_msg(f"❌ Groq Error: {str(e)}", level="step")
 
     # 3. Claude
     try:
@@ -184,9 +201,9 @@ def call_all_ais(image_path, attempt_num):
         )
         data = json.loads(resp.content[0].text.replace("```json", "").replace("```", "").strip())
         results["Claude"] = data['target_x'] - data['slider_x']
-    except: pass
+    except Exception as e:
+        log_msg(f"❌ Claude Error: {str(e)}", level="step")
     
-    log_msg(f"🧠 AI Results: Gemini={results['Gemini']}, Groq={results['Groq']}, Claude={results['Claude']}", level="step")
     return results
 
 # --- WORKER ---
@@ -212,7 +229,6 @@ async def master_loop():
                 context = await browser.new_context(viewport={'width': 1920, 'height': 1080})
                 page = await context.new_page()
 
-                # 1. GOTO URL
                 log_msg("🌍 Opening ID8...", level="step")
                 try:
                     await page.goto(BASE_URL, timeout=60000)
@@ -222,56 +238,41 @@ async def master_loop():
                 except:
                     log_msg("💀 Page Load Timeout.", level="main"); await browser.close(); continue
 
-                # 2. CLICK REGISTER (Only if not already on register form)
-                # If we see "Register HUAWEI ID" as a title, we are already there.
-                header_exists = await page.get_by_text("Register HUAWEI ID", exact=True).count() > 0
-                
-                if not header_exists:
-                    if await page.get_by_text("Register").count() > 0:
+                # 2. CLICK REGISTER (Only if needed)
+                if await page.get_by_text("Register HUAWEI ID", exact=True).count() == 0:
+                    reg_btn = page.get_by_text("Register", exact=True).or_(page.get_by_text("Sign up", exact=True))
+                    if await reg_btn.count() > 0:
                         log_msg("🖱️ Clicking Register Link...", level="step")
-                        await page.get_by_text("Register").first.click()
+                        await reg_btn.first.click()
                         await capture_step(page, "2_Register_Clicked")
                         log_msg("⏳ Waiting 3s after Register click...", level="step")
                         await asyncio.sleep(3)
                 else:
                     log_msg("✅ Already on Register Page.", level="step")
 
-                # 3. SELECT PHONE TAB & FIND INPUT
-                # We use a smart OR locator: look for type='tel' OR placeholder='Phone'
-                # This fixes the issue where the bot couldn't find the input
-                phone_input = page.locator("input[type='tel']").or_(page.get_by_placeholder("Phone"))
-
-                if await phone_input.count() > 0 and await phone_input.is_visible():
-                     log_msg("✅ Phone Input Found!", level="step")
-                     # Click tab just in case, but rely on input visibility
-                     tab = page.get_by_text("Register with phone number")
-                     if await tab.count() > 0:
-                         await tab.first.click()
-                         await asyncio.sleep(1)
-                else:
-                    # Try clicking tab to make input appear
-                    log_msg("🖱️ Clicking Phone Tab to reveal input...", level="step")
-                    tab = page.get_by_text("Register with phone number")
-                    if await tab.count() > 0:
-                        await tab.first.click()
+                # 3. PHONE INPUT
+                phone_input = page.get_by_placeholder("Phone")
+                if not await phone_input.is_visible():
+                    log_msg("🖱️ Clicking Phone Tab...", level="step")
+                    phone_tab = page.get_by_text("Register with phone number")
+                    if await phone_tab.count() > 0:
+                        await phone_tab.first.click()
                         await asyncio.sleep(2)
                         await capture_step(page, "3_Phone_Tab_Clicked")
-                    
-                    # Check again
-                    if await phone_input.count() == 0:
-                        log_msg("💀 Phone Input Field Missing! (Check Screenshot)", level="main")
-                        await capture_step(page, "Error_No_Input")
-                        await browser.close(); continue
-
-                # 4. INPUT PHONE
-                log_msg("⌨️ Typing Number...", level="step")
-                clean_phone = current_number.replace("+", "").replace(" ", "")
-                if clean_phone.startswith("7") and len(clean_phone) > 10: clean_phone = clean_phone[1:]
                 
-                # Fill the found input
-                await phone_input.first.fill(clean_phone)
-                await asyncio.sleep(1)
-                await capture_step(page, "4_Number_Typed")
+                if await phone_input.count() > 0:
+                    log_msg("⌨️ Typing Number...", level="step")
+                    clean_phone = current_number.replace("+", "").replace(" ", "")
+                    if clean_phone.startswith("7") and len(clean_phone) > 10: clean_phone = clean_phone[1:]
+                    
+                    await phone_input.click()
+                    await page.keyboard.type(clean_phone, delay=100)
+                    await asyncio.sleep(1)
+                    await capture_step(page, "4_Number_Typed")
+                else:
+                    log_msg("💀 Phone Input Field Missing!", level="main")
+                    await capture_step(page, "Error_No_Input")
+                    await browser.close(); continue
 
                 # 5. CLICK GET CODE
                 code_btn = page.get_by_text("Get code", exact=True)
@@ -320,7 +321,7 @@ async def master_loop():
                                 sx, sy = s_box['x'] + s_box['width']/2, s_box['y'] + s_box['height']/2
                                 
                                 await page.mouse.move(sx, sy); await page.mouse.down()
-                                await page.mouse.move(sx + move_px, sy) # Instant Move
+                                await page.mouse.move(sx + move_px, sy)
                                 await page.mouse.up()
                                 
                                 log_msg("⏳ Verifying (10s)...", level="step")
@@ -336,11 +337,10 @@ async def master_loop():
                         log_msg("ℹ️ No Captcha Found (Maybe Skipped)", level="step")
                         captcha_solved = True; break
 
-                # --- RESULT CHECK ---
                 if not captcha_solved:
                     log_msg("🔥🔥 ALL AI FAILED. KILL SWITCH.", level="main")
                     await capture_step(page, "Error_Final_Fail")
-                    BOT_RUNNING = False # KILL SWITCH
+                    BOT_RUNNING = False
                     save_to_file(FAILED_FILE, current_number)
                 elif await page.get_by_text("sent", exact=False).count() > 0:
                     log_msg("✅ SMS SENT!", level="main")
@@ -348,16 +348,16 @@ async def master_loop():
                     save_to_file(SUCCESS_FILE, current_number)
                     remove_current_number()
                 else:
-                    log_msg("⚠️ Captcha gone but no SMS msg?", level="step")
-                    await capture_step(page, "8_Unknown_State")
-                    remove_current_number() # Assume success?
+                    log_msg("⚠️ Unknown State", level="step")
+                    await capture_step(page, "8_Unknown")
+                    remove_current_number()
 
                 await browser.close()
 
         except Exception as e:
             log_msg(f"🔥 CRASH: {e}", level="main"); await asyncio.sleep(5)
 
-# --- WEB ROUTES (RESTORED) ---
+# --- WEB ROUTES (SAME AS BEFORE) ---
 @app.get("/")
 async def read_index(): return FileResponse('index.html')
 

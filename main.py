@@ -51,6 +51,9 @@ SUCCESS_FILE = os.path.join(BASE_DIR, "success.txt")
 FAILED_FILE = os.path.join(BASE_DIR, "failed.txt")
 PROXY_FILE = os.path.join(BASE_DIR, "proxies.txt")
 
+# 🔥 FIXED WIDTH CONSTANT
+FIXED_WIDTH = 260 
+
 app = FastAPI()
 if not os.path.exists(CAPTURE_DIR): os.makedirs(CAPTURE_DIR)
 app.mount("/captures", StaticFiles(directory=CAPTURE_DIR), name="captures")
@@ -97,6 +100,19 @@ def save_to_file(filename, data):
 def encode_image(image_path):
     with open(image_path, "rb") as image_file:
         return base64.b64encode(image_file.read()).decode('utf-8')
+
+# --- 🖼️ IMAGE PRE-PROCESSING (The Roboflow Trick) ---
+def prepare_image_for_ai(image_path):
+    """Resizes image to exactly 260px width to match browser logic"""
+    img = Image.open(image_path)
+    w_percent = (FIXED_WIDTH / float(img.size[0]))
+    h_size = int((float(img.size[1]) * float(w_percent)))
+    img = img.resize((FIXED_WIDTH, h_size), Image.Resampling.LANCZOS)
+    
+    # Save optimized image
+    optimized_path = image_path.replace(".png", "_optimized.png")
+    img.save(optimized_path)
+    return optimized_path
 
 # --- PROXY LOGIC ---
 def get_current_proxy():
@@ -151,94 +167,117 @@ async def show_red_dot(page, x, y):
         """)
     except: pass
 
-# --- 🧠 MULTI-AI BRAIN (PERCENTAGE BASED) ---
+# --- 🧠 MULTI-AI BRAIN (ROBOFLOW LOGIC) ---
 def call_all_ais(image_path, attempt_num):
     log_msg(f"📡 AI Round {attempt_num} Requesting...", level="step")
     
-    # 🔥 Updated Prompt for Percentage (0.0 to 1.0)
+    # 🔥 Step 1: Force resize to 260px
+    optimized_img_path = prepare_image_for_ai(image_path)
+    
+    # 🔥 Step 2: Roboflow-Style Prompt (Bounding Boxes)
+    # 2D coordinates [ymin, xmin, ymax, xmax] are standard for Gemini
     prompt_text = """
-    ACT AS A PRECISION VISION ANALYST.
-    Image Context: This is a puzzle slider captcha with a fixed width of 260px.
-
-    TASK:
-    1. Identify the 'movable puzzle piece' (usually on the far left).
-    2. Identify the 'target slot' (the matching hole in the background).
-    3. Determine the horizontal distance (X-axis) between the CENTER of the piece and the CENTER of the slot.
-
-    CONSTRAINTS:
-    - Use the 260px width as the absolute reference.
-    - Calculate the distance as a RATIO (distance_pixels / 260).
-    - Be extremely precise with the centers; ignore the shadows/glow, focus on the solid shape.
-
-    Return ONLY a JSON object:
-    {"distance_ratio": 0.41, "pixel_distance": 107, "confidence": 0.95}
+    You are an Object Detection engine trained on Captcha images.
+    The image width is exactly 260 pixels.
+    
+    Detect two objects:
+    1. "slider" (the puzzle piece).
+    2. "target" (the hole/slot).
+    
+    Return 2D bounding boxes for both in standard [ymin, xmin, ymax, xmax] format (normalized 0-1000 scale).
+    
+    Return ONLY JSON:
+    {
+      "slider_box_2d": [ymin, xmin, ymax, xmax],
+      "target_box_2d": [ymin, xmin, ymax, xmax]
+    }
     """
-
     
     results = {"Gemini": None, "Groq": None}
     
     # 1. Gemini
     try:
-        img_pil = Image.open(image_path)
+        img_pil = Image.open(optimized_img_path)
         resp = client_gemini.models.generate_content(
-            model="gemini-2.5-flash", # Stable
+            model="gemini-1.5-flash", 
             contents=[prompt_text, img_pil]
         )
         if resp.text:
             clean_text = resp.text.replace("```json", "").replace("```", "").strip()
             data = json.loads(clean_text)
-            results["Gemini"] = data.get('distance_ratio')
-            log_msg(f"✅ Gemini Ratio: {results['Gemini']}", level="step")
+            
+            # --- MATH: Convert Box to Center X (Pixels) ---
+            # Gemini returns 0-1000 scale usually. We map to 260px.
+            
+            def get_center_x(box):
+                # box = [ymin, xmin, ymax, xmax]
+                xmin = box[1]
+                xmax = box[3]
+                center_1000 = (xmin + xmax) / 2
+                return (center_1000 / 1000) * FIXED_WIDTH
+
+            slider_x = get_center_x(data['slider_box_2d'])
+            target_x = get_center_x(data['target_box_2d'])
+            
+            distance = target_x - slider_x
+            results["Gemini"] = distance
+            
+            log_msg(f"✅ Gemini (Box Logic): Slider={slider_x:.1f}, Target={target_x:.1f} -> Dist={distance:.1f}px", level="step")
+            
     except Exception as e:
         log_msg(f"❌ Gemini Error: {e}", level="step")
 
-    # 2. Groq (Backup)
+    # 2. Groq (Backup - Simpler Logic)
     try:
         if results["Gemini"] is None:
-            img_b64 = encode_image(image_path)
+            # Fallback to simple prompt for Groq
+            simple_prompt = "The image is 260px wide. Find center X of slider and target. Return JSON: {'slider_x': 10, 'target_x': 100}"
+            img_b64 = encode_image(optimized_img_path)
             resp = client_groq.chat.completions.create(
-                messages=[{"role": "user", "content": [{"type": "text", "text": prompt_text}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}]}],
+                messages=[{"role": "user", "content": [{"type": "text", "text": simple_prompt}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}]}],
                 model="llama-3.2-11b-vision-preview" 
             )
-            raw_groq = resp.choices[0].message.content
-            data = json.loads(raw_groq.replace("```json", "").replace("```", "").strip())
-            results["Groq"] = data.get('distance_ratio')
-            log_msg(f"✅ Groq Ratio: {results['Groq']}", level="step")
-    except Exception as e:
-        pass
+            raw = resp.choices[0].message.content
+            data = json.loads(raw.replace("```json", "").replace("```", "").strip())
+            results["Groq"] = data['target_x'] - data['slider_x']
+            log_msg(f"✅ Groq Found: {results['Groq']}px", level="step")
+    except: pass
     
     return results
 
 # --- HUMAN MOUSE MOVEMENT ---
-async def human_drag(page, start_x, start_y, end_x, end_y):
+async def human_drag(page, start_x, start_y, distance):
+    end_x = start_x + distance
+    
     await page.mouse.move(start_x, start_y)
     await page.mouse.down()
     
-    # Calculate distance
-    distance = end_x - start_x
-    steps = 25 # Increase steps for smoother "human" look
-    
+    steps = 30 
     for i in range(steps):
-        # Ease-out function (starts fast, slows down at end)
         progress = i / steps
-        ease = 1 - (1 - progress) * (1 - progress) 
+        # Bezier-like curve for speed (Fast start, slow end)
+        ease = 1 - pow(1 - progress, 3) 
         
         current_x = start_x + (distance * ease)
-        # Add tiny random Y jitter (shake hand slightly)
-        jitter_y = start_y + random.uniform(-2, 2)
+        jitter_y = start_y + random.uniform(-3, 3) # Hand shake
         
         await page.mouse.move(current_x, jitter_y)
-        await asyncio.sleep(random.uniform(0.01, 0.03)) # Random tiny delays
+        # Random sleep to mimic processing time
+        await asyncio.sleep(random.uniform(0.005, 0.02))
 
-    # Final Adjustment
-    await page.mouse.move(end_x, end_y)
+    # Overshoot/Undershoot correction (Human behavior)
+    correction = random.uniform(-2, 2)
+    await page.mouse.move(end_x + correction, start_y)
+    await asyncio.sleep(0.1)
+    await page.mouse.move(end_x, start_y) # Fix position
+    
     await asyncio.sleep(0.1)
     await page.mouse.up()
 
 # --- WORKER ---
 async def master_loop():
     global BOT_RUNNING
-    log_msg("🚀 SYSTEM STARTED: Percentage + Human Drag", level="main")
+    log_msg(f"🚀 SYSTEM STARTED: Roboflow Logic (Fixed {FIXED_WIDTH}px)", level="main")
     
     while BOT_RUNNING:
         current_number = get_current_number_from_file()
@@ -274,12 +313,8 @@ async def master_loop():
                         log_msg("🖱️ Clicking Register Link...", level="step")
                         await reg_btn.first.click()
                         await capture_step(page, "2_Register_Clicked")
-                        log_msg("⏳ Waiting 3s after Register click...", level="step")
-                        await asyncio.sleep(3)
-                    else:
-                        log_msg("✅ Probably already on Register Page.", level="step")
-                else:
-                    log_msg("✅ Already on Register Page.", level="step")
+                        log_msg("⏳ Waiting 3s...", level="step"); await asyncio.sleep(3)
+                else: log_msg("✅ Already on Register Page.", level="step")
 
                 # 3. PHONE INPUT
                 phone_input = page.get_by_placeholder("Phone")
@@ -287,41 +322,31 @@ async def master_loop():
                     log_msg("🖱️ Clicking Phone Tab...", level="step")
                     phone_tab = page.get_by_text("Register with phone number")
                     if await phone_tab.count() > 0:
-                        await phone_tab.first.click()
-                        await asyncio.sleep(2)
-                        await capture_step(page, "3_Phone_Tab_Clicked")
+                        await phone_tab.first.click(); await asyncio.sleep(2); await capture_step(page, "3_Phone_Tab_Clicked")
                 
                 if await phone_input.count() > 0:
                     log_msg("⌨️ Typing Number...", level="step")
                     clean_phone = current_number.replace("+", "").replace(" ", "")
                     if clean_phone.startswith("7") and len(clean_phone) > 10: clean_phone = clean_phone[1:]
-                    await phone_input.click()
-                    await page.keyboard.type(clean_phone, delay=100)
-                    await asyncio.sleep(1)
+                    await phone_input.click(); await page.keyboard.type(clean_phone, delay=100); await asyncio.sleep(1)
                     await capture_step(page, "4_Number_Typed")
                 else:
-                    log_msg("💀 Phone Input Missing!", level="main")
-                    await capture_step(page, "Error_No_Input")
-                    await browser.close(); continue
+                    log_msg("💀 Phone Input Missing!", level="main"); await capture_step(page, "Error_No_Input"); await browser.close(); continue
 
                 # 5. CLICK GET CODE
                 code_btn = page.get_by_text("Get code", exact=True)
                 if await code_btn.count() > 0:
                     log_msg("🖱️ Clicking Get Code...", level="step")
-                    await code_btn.first.click()
-                    log_msg("⏳ Hard Wait: 10s for Captcha...", level="step")
-                    await asyncio.sleep(10)
+                    await code_btn.first.click(); log_msg("⏳ Hard Wait: 10s...", level="step"); await asyncio.sleep(10)
                     await capture_step(page, "5_After_Get_Code")
                 else:
-                    log_msg("💀 Get Code Button Missing!", level="main")
-                    await capture_step(page, "Error_No_GetCode")
-                    await browser.close(); continue
+                    log_msg("💀 Get Code Missing!", level="main"); await capture_step(page, "Error_No_GetCode"); await browser.close(); continue
 
                 # --- 🧩 CAPTCHA LOGIC ---
                 captcha_solved = False
                 
                 for attempt in range(3):
-                    log_msg(f"⚔️ Round {attempt+1}: Gemini", level="main")
+                    log_msg(f"⚔️ Round {attempt+1}: Gemini (Box Logic)", level="main")
                     
                     puzzle = page.locator("img[src*='captcha']").first
                     if await puzzle.count() == 0: puzzle = page.locator(".geetest_canvas_bg").first
@@ -331,17 +356,19 @@ async def master_loop():
                         sname = f"{CAPTURE_DIR}/try_{ts}_{attempt}.png"
                         await puzzle.screenshot(path=sname)
                         
-                        # Call AI for Ratio (0.0 - 1.0)
+                        # Call AI (Returns Pixels directly based on 260px width)
                         all_res = call_all_ais(sname, attempt+1)
-                        ratio = all_res.get("Gemini") or all_res.get("Groq")
+                        move_px = all_res.get("Gemini") or all_res.get("Groq")
                         
-                        if ratio:
-                            # Calculate Pixels based on ACTUAL Browser Element Width
+                        if move_px:
+                            # ⚠️ CRITICAL: Calculate Scale Ratio (Browser Width vs 260px)
                             box = await puzzle.bounding_box()
-                            actual_width = box['width']
-                            move_px = ratio * actual_width
+                            browser_width = box['width'] # e.g. 260 or 300
                             
-                            log_msg(f"🤖 Move Ratio: {ratio} | Px: {move_px:.2f}", level="step")
+                            # Scaling Formula: AI saw 260px. Browser has X px.
+                            final_move = (move_px / FIXED_WIDTH) * browser_width
+                            
+                            log_msg(f"🤖 AI:{move_px:.1f}px | Browser:{browser_width:.0f}px | Final:{final_move:.1f}px", level="step")
                             
                             slider = page.locator(".geetest_slider_button").or_(page.locator(".nc_iconfont.btn_slide")).or_(page.locator(".yidun_slider"))
                             if await slider.count() > 0:
@@ -349,35 +376,28 @@ async def master_loop():
                                 sx, sy = s_box['x'] + s_box['width']/2, s_box['y'] + s_box['height']/2
                                 
                                 # 🔥 HUMAN DRAG
-                                await human_drag(page, sx, sy, sx + move_px, sy)
+                                await human_drag(page, sx, sy, final_move)
                                 
-                                log_msg("⏳ Verifying (10s)...", level="step")
-                                await asyncio.sleep(10)
+                                log_msg("⏳ Verifying (10s)...", level="step"); await asyncio.sleep(10)
                                 await capture_step(page, f"6_Verify_Round_{attempt+1}")
                                 
                                 if await puzzle.count() == 0 or not await puzzle.is_visible():
-                                    log_msg("🎉 CAPTCHA SOLVED!", level="main")
-                                    captcha_solved = True; break
+                                    log_msg("🎉 CAPTCHA SOLVED!", level="main"); captcha_solved = True; break
                             else: log_msg("❌ Slider Missing", level="step")
                         else: log_msg(f"❌ Gemini returned Null", level="step")
                     else:
-                        log_msg("ℹ️ No Captcha Found (Maybe Skipped)", level="step")
-                        captcha_solved = True; break
+                        log_msg("ℹ️ No Captcha (Skipped?)", level="step"); captcha_solved = True; break
 
                 if not captcha_solved:
                     log_msg("🔥🔥 ALL AI FAILED. KILL SWITCH.", level="main")
                     await capture_step(page, "Error_Final_Fail")
-                    BOT_RUNNING = False
-                    save_to_file(FAILED_FILE, current_number)
+                    BOT_RUNNING = False; save_to_file(FAILED_FILE, current_number)
                 elif await page.get_by_text("sent", exact=False).count() > 0:
                     log_msg("✅ SMS SENT!", level="main")
                     await capture_step(page, "7_Success")
-                    save_to_file(SUCCESS_FILE, current_number)
-                    remove_current_number()
+                    save_to_file(SUCCESS_FILE, current_number); remove_current_number()
                 else:
-                    log_msg("⚠️ Unknown State", level="step")
-                    await capture_step(page, "8_Unknown")
-                    remove_current_number()
+                    log_msg("⚠️ Unknown State", level="step"); await capture_step(page, "8_Unknown"); remove_current_number()
 
                 await browser.close()
 

@@ -3,88 +3,184 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Heavy Background Remover</title>
+    <title>Huawei Bot Manager</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
-        body { background-color: #0d1117; color: #c9d1d9; font-family: monospace; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
-        .container { text-align: center; border: 2px solid #30363d; padding: 40px; border-radius: 10px; background: #161b22; width: 400px; }
-        h1 { color: #58a6ff; }
-        .status-box { margin: 20px 0; padding: 15px; border-radius: 5px; background: #21262d; border: 1px solid #30363d; }
-        button { width: 100%; padding: 15px; border-radius: 5px; border: none; font-weight: bold; cursor: pointer; margin-top: 10px; }
-        .btn-upload { background: #238636; color: white; }
-        .btn-download { background: #1f6feb; color: white; display: none; } /* Hidden by default */
-        .loader { display: none; margin: 20px auto; border: 4px solid #f3f3f3; border-top: 4px solid #58a6ff; border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; }
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        :root { --bg: #0f172a; --panel: #1e293b; --accent: #ef4444; --text: #e2e8f0; --green: #10b981; --red: #dc2626; --orange: #f59e0b; }
+        /* Huawei uses Red accent mostly, adjusted slightly */
+        body { margin: 0; font-family: 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); overflow-x: hidden; }
+        .header { display: flex; justify-content: space-between; align-items: center; padding: 15px 20px; background: var(--panel); border-bottom: 1px solid #334155; }
+        .header h2 { margin: 0; font-size: 18px; letter-spacing: 1px; color: white; }
+        .icon-btn { background: none; border: none; color: var(--text); font-size: 20px; cursor: pointer; transition: 0.2s; }
+        .icon-btn:hover { color: var(--accent); }
+        .container { display: flex; flex-direction: column; padding: 20px; gap: 20px; height: calc(100vh - 80px); }
+        .stats-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px; }
+        .stat-box { background: var(--panel); padding: 15px; border-radius: 10px; text-align: center; box-shadow: 0 4px 6px rgba(0,0,0,0.3); border-top: 3px solid transparent; position: relative; }
+        .stat-box h3 { margin: 0; font-size: 12px; color: #94a3b8; font-weight: normal; }
+        .stat-box .count { font-size: 24px; font-weight: bold; margin-top: 5px; }
+        .stat-total { border-color: #3b82f6; }
+        .stat-success { border-color: var(--green); }
+        .stat-failed { border-color: var(--red); }
+        .btn-download-sm { position: absolute; bottom: 5px; right: 5px; background: none; border: none; color: #64748b; cursor: pointer; font-size: 14px; transition: 0.2s; }
+        .btn-download-sm:hover { color: var(--text); transform: scale(1.1); }
+        .card { background: var(--panel); padding: 20px; border-radius: 10px; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-size: 12px; color: #94a3b8; }
+        .upload-box { border: 2px dashed #334155; padding: 15px; text-align: center; border-radius: 5px; cursor: pointer; transition: 0.2s; background: #0f172a; font-size: 13px; color: #cbd5e1; }
+        .upload-box:hover { border-color: var(--accent); background: #371b1b; }
+        input[type="text"] { width: 100%; padding: 10px; background: #0f172a; border: 1px solid #334155; color: white; border-radius: 5px; outline: none; }
+        .btn-row { display: flex; gap: 10px; margin-top: 15px; }
+        .btn-control { flex: 1; padding: 12px; font-size: 14px; font-weight: bold; border: none; border-radius: 6px; cursor: pointer; transition: 0.2s; text-transform: uppercase; }
+        .start { background: var(--green); color: white; }
+        .stop { background: var(--red); color: white; }
+        .clear-data { background: var(--orange); color: white; flex: 0.5; } 
+        .terminal { background: black; color: #00e676; font-family: 'Courier New', monospace; flex: 1; overflow-y: auto; padding: 15px; border-radius: 5px; font-size: 12px; border: 1px solid #333; }
+        #toast { visibility: hidden; min-width: 250px; background-color: var(--accent); color: #fff; text-align: center; border-radius: 5px; padding: 16px; position: fixed; z-index: 2000; left: 50%; transform: translateX(-50%); top: 30px; opacity: 0; transition: opacity 0.5s, top 0.5s; }
+        #toast.show { visibility: visible; opacity: 1; top: 50px; }
+        .modal { display: none; position: fixed; top:0; left:0; width:100%; height:100%; background: rgba(0,0,0,0.9); align-items: center; justify-content: center; z-index: 1000; }
+        .modal-content { background: var(--panel); padding: 20px; width: 90%; max-width: 600px; border-radius: 10px; max-height: 85vh; overflow-y: auto; }
+        .gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; }
+        .gallery-grid img { width: 100%; border-radius: 5px; border: 1px solid #444; cursor: pointer; aspect-ratio: 16/9; object-fit: cover; } /* 16:9 for Desktop */
+        .modal-header { display: flex; justify-content: space-between; margin-bottom: 20px; border-bottom: 1px solid #333; padding-bottom: 10px; align-items: center; }
+        .modal-actions { display: flex; gap: 10px; margin-top: 20px; }
+        .btn-save { background: var(--green); flex: 1; border:none; padding: 10px; color: white; border-radius: 5px; cursor: pointer; }
+        .btn-clear { background: #475569; flex: 0.5; border:none; padding: 10px; color: #cbd5e1; border-radius: 5px; cursor: pointer; }
     </style>
 </head>
 <body>
+    <div id="toast">Msg</div>
+    
+    <div id="settingsModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header"><h3>⚙️ Settings</h3><button class="icon-btn" onclick="toggleModal('settingsModal')"><i class="fas fa-times"></i></button></div>
+            <div class="form-group">
+                <label>Upload Proxy List</label>
+                <div class="upload-box" onclick="document.getElementById('proxyFile').click()"><span id="proxyFileName">Upload proxies.txt</span></div>
+                <input type="file" id="proxyFile" accept=".txt" hidden onchange="uploadFile('proxyFile', '/upload_proxies', 'proxyFileName')">
+            </div>
+            <div class="form-group">
+                <label>Manual Proxy</label>
+                <input type="text" id="manualProxy" placeholder="ip:port:user:pass">
+            </div>
+            <div class="modal-actions">
+                <button class="btn-save" onclick="saveSettings()">Save</button>
+                <button class="btn-clear" onclick="clearProxyData()">Clear Proxies</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="galleryModal" class="modal">
+        <div class="modal-content" style="max-width: 900px;">
+            <div class="modal-header"><h3>📸 Live View</h3><button class="icon-btn" onclick="toggleModal('galleryModal')"><i class="fas fa-times"></i></button></div>
+            <div class="gallery-grid" id="galleryGrid"></div>
+        </div>
+    </div>
+
+    <div class="header">
+        <button class="icon-btn" onclick="openGallery()"><i class="fas fa-images"></i></button>
+        <h2>HUAWEI BOT</h2>
+        <button class="icon-btn" onclick="toggleModal('settingsModal')"><i class="fas fa-cog"></i></button>
+    </div>
+
     <div class="container">
-        <h1>🛠️ SERVER PROCESSOR</h1>
-        
-        <div class="status-box">
-            STATUS: <span id="statusText" style="color: #e3b341;">Checking...</span>
-            <div class="loader" id="loader"></div>
+        <div class="stats-grid">
+            <div class="stat-box stat-total"><h3>Remaining</h3><div class="count" id="countTotal">0</div><button class="btn-download-sm" onclick="downloadFile('numbers')"><i class="fas fa-download"></i></button></div>
+            <div class="stat-box stat-success"><h3>Success</h3><div class="count" id="countSuccess">0</div><button class="btn-download-sm" onclick="downloadFile('success')"><i class="fas fa-download"></i></button></div>
+            <div class="stat-box stat-failed"><h3>Failed</h3><div class="count" id="countFailed">0</div><button class="btn-download-sm" onclick="downloadFile('failed')"><i class="fas fa-download"></i></button></div>
         </div>
 
-        <div id="uploadArea">
-            <input type="file" id="fileInput" multiple accept="image/*" style="margin-bottom: 10px;">
-            <button class="btn-upload" onclick="uploadFiles()">🚀 START UPLOAD</button>
+        <div class="card">
+            <div class="form-group" style="margin-bottom:0;">
+                <div class="upload-box" onclick="document.getElementById('numFile').click()"><span id="numFileName">📂 Upload Numbers.txt</span></div>
+                <input type="file" id="numFile" accept=".txt" hidden onchange="uploadFile('numFile', '/upload_numbers', 'numFileName')">
+            </div>
+            <div class="btn-row">
+                <button id="mainBtn" class="btn-control start" onclick="toggleBot()">START</button>
+                <button class="btn-control clear-data" onclick="clearAllData()"><i class="fas fa-trash"></i> CLEAR ALL</button>
+            </div>
         </div>
-
-        <a href="/download" id="downloadLink">
-            <button class="btn-download" id="downloadBtn">📥 DOWNLOAD RESULT (ZIP)</button>
-        </a>
+        <div class="terminal" id="terminal"><div>> Desktop Mode Ready.</div></div>
     </div>
 
     <script>
-        const statusText = document.getElementById('statusText');
-        const loader = document.getElementById('loader');
-        const uploadArea = document.getElementById('uploadArea');
-        const downloadBtn = document.getElementById('downloadBtn');
+        let userScrolledUp = false;
+        window.onload = function() {
+            const savedP = localStorage.getItem('manualProxy');
+            if(savedP) document.getElementById('manualProxy').value = savedP;
+            const term = document.getElementById('terminal');
+            term.addEventListener('scroll', () => {
+                if (term.scrollTop + term.clientHeight < term.scrollHeight - 10) userScrolledUp = true;
+                else userScrolledUp = false;
+            });
+        };
+        function showToast(msg) { const x = document.getElementById("toast"); x.innerText = msg; x.className = "show"; setTimeout(() => x.className = "", 3000); }
+        function toggleModal(id) { const m = document.getElementById(id); m.style.display = m.style.display === 'flex' ? 'none' : 'flex'; }
+        
+        function downloadFile(type) { window.location.href = `/download/${type}`; }
+        
+        async function clearProxyData() {
+            if(!confirm("Delete all proxies?")) return;
+            document.getElementById('manualProxy').value = "";
+            localStorage.removeItem('manualProxy');
+            await fetch('/clear_proxies', { method: 'POST' });
+            showToast("Proxies Cleared");
+        }
 
-        // Check Status Every 3 Seconds
-        setInterval(checkStatus, 3000);
+        async function clearAllData() {
+            if(!confirm("⚠️ RESET ALL? This deletes numbers list.")) return;
+            await fetch('/clear_all', { method: 'POST' });
+            document.getElementById('terminal').innerHTML = "<div>> System Reset.</div>";
+            showToast("System Reset");
+        }
 
-        async function checkStatus() {
+        async function uploadFile(inputId, endpoint, labelId) {
+            const file = document.getElementById(inputId).files[0];
+            if(!file) return;
+            const fd = new FormData(); fd.append('file', file);
+            document.getElementById(labelId).innerText = "Uploading...";
+            try { await fetch(endpoint, { method: 'POST', body: fd }); document.getElementById(labelId).innerText = "✅ " + file.name; } catch(e) { showToast("Upload Failed"); }
+        }
+
+        async function saveSettings() {
+            const proxy = document.getElementById('manualProxy').value;
+            localStorage.setItem('manualProxy', proxy);
+            const fd = new FormData(); fd.append('country', "Default"); fd.append('manual_proxy', proxy);
+            await fetch('/update_settings', { method: 'POST', body: fd });
+            document.getElementById('settingsModal').style.display = 'none';
+        }
+
+        let isRunning = false;
+        async function toggleBot() {
+            const btn = document.getElementById('mainBtn');
+            if (!isRunning) { await saveSettings(); await fetch('/start', {method: 'POST'}); btn.innerText = "STOP"; btn.className = "btn-control stop"; isRunning = true; }
+            else { await fetch('/stop', {method: 'POST'}); btn.innerText = "START"; btn.className = "btn-control start"; isRunning = false; }
+        }
+
+        async function openGallery() { toggleModal('galleryModal'); }
+
+        async function pollStatus() {
             try {
                 const res = await fetch('/status');
                 const data = await res.json();
-                
-                statusText.innerText = data.message;
-
-                if (data.state === 'processing') {
-                    loader.style.display = 'block';
-                    uploadArea.style.display = 'none';
-                    downloadBtn.style.display = 'none';
-                    statusText.style.color = '#e3b341'; // Yellow
-                } 
-                else if (data.state === 'done') {
-                    loader.style.display = 'none';
-                    uploadArea.style.display = 'block'; // Allow new upload
-                    downloadBtn.style.display = 'block'; // Show Download
-                    statusText.style.color = '#2ea043'; // Green
-                } 
-                else {
-                    loader.style.display = 'none';
-                    uploadArea.style.display = 'block';
-                    downloadBtn.style.display = 'none';
-                    statusText.style.color = '#c9d1d9';
+                if(data.stats) {
+                    document.getElementById('countSuccess').innerText = data.stats.success;
+                    document.getElementById('countFailed').innerText = data.stats.failed;
+                    document.getElementById('countTotal').innerText = data.stats.remaining;
                 }
-            } catch (e) { console.log("Connection error"); }
+                const term = document.getElementById('terminal');
+                const newHTML = [...data.logs].reverse().map(l => `<div>${l}</div>`).join('');
+                if(term.innerHTML !== newHTML) { term.innerHTML = newHTML; if (!userScrolledUp) term.scrollTop = term.scrollHeight; }
+                
+                const btn = document.getElementById('mainBtn');
+                if (data.running && !isRunning) { isRunning = true; btn.innerText = "STOP"; btn.className = "btn-control stop"; }
+
+                if(document.getElementById('galleryModal').style.display === 'flex') {
+                    const grid = document.getElementById('galleryGrid');
+                    grid.innerHTML = data.images.length === 0 ? "<p style='color:#888;text-align:center;'>No images.</p>" : data.images.map(url => `<img src="${url}" onclick="window.open('${url}', '_blank')">`).join('');
+                }
+            } catch(e) {}
         }
-
-        async function uploadFiles() {
-            const files = document.getElementById('fileInput').files;
-            if (files.length === 0) return alert("Select files first!");
-
-            const formData = new FormData();
-            for (let i = 0; i < files.length; i++) formData.append('files', files[i]);
-
-            statusText.innerText = "Uploading...";
-            loader.style.display = 'block';
-
-            await fetch('/upload', { method: 'POST', body: formData });
-            // No need to wait for response, the interval will pick up the 'processing' status
-        }
+        setInterval(pollStatus, 1500);
     </script>
 </body>
 </html>

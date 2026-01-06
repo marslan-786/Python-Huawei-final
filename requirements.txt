@@ -9,9 +9,5 @@ python-dotenv
 jinja2
 imageio[ffmpeg]
 numpy
-scipy
-pytweening
-rembg[cli]
-onnxruntime
 opencv-python-headless
-ddddocr
+roboflow

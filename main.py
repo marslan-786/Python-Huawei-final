@@ -181,59 +181,107 @@ async def show_red_dot(page, x, y):
     except: pass
 
 # --- 🔥 CUSTOM AI SOLVER LOGIC 🔥 ---
+# --- 🔥 SMART AI SOLVER WITH LOGIC FILTERS 🔥 ---
 def solve_puzzle_with_roboflow(image_path, attempt_id):
     try:
-        # 🔥 CONFIDENCE LEVEL: 5% (Detect everything!)
-        prediction = model.predict(image_path, confidence=5, overlap=50).json()
+        # 1. Prediction (Confidence increased to 25% to avoid clouds/noise)
+        prediction = model.predict(image_path, confidence=25, overlap=30).json()
         
-        # Log the raw response to debug
-        # log_msg(f"RAW PREDICTION: {prediction}", level="step")
-        
-        slider_x = None
-        target_x = None
-        
-        # Load Image for Debugging Drawing
         img = cv2.imread(image_path)
+        height, width, _ = img.shape
         
-        # 2. Parse Predictions
+        # Lists to store valid candidates
+        valid_sliders = []
+        valid_targets = []
+        
+        # 2. SMART FILTERING LOOP
         if 'predictions' in prediction:
             for p in prediction['predictions']:
-                x = p['x']
-                y = p['y']
-                w = p['width']
-                h = p['height']
+                x, y, w, h = p['x'], p['y'], p['width'], p['height']
                 class_name = p['class']
-                confidence = p['confidence']
                 
-                log_msg(f"Found {class_name} at X={x:.1f} with {confidence*100:.1f}% confidence", level="step")
+                # --- RULE 1: IGNORE SKY AND GROUND (Y-Axis Filter) ---
+                # Puzzle is usually in the middle 60% of the image
+                if y < (height * 0.15) or y > (height * 0.85):
+                    continue # Skip noise at very top or bottom
+                
+                # --- RULE 2: SIZE CHECK ---
+                # Puzzle piece shouldn't be tiny or massive
+                if w < 20 or w > (width/4): 
+                    continue
 
-                # Save coordinates
+                # Save valid objects
                 if class_name == "slider":
-                    slider_x = x
-                    # Draw YELLOW Box for Slider (BGR: 0, 255, 255)
-                    cv2.rectangle(img, (int(x-w/2), int(y-h/2)), (int(x+w/2), int(y+h/2)), (0, 255, 255), 2)
-                    cv2.putText(img, "SLIDER", (int(x-w/2), int(y-h/2)-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
-                    
+                    valid_sliders.append(p)
                 elif class_name == "target":
-                    target_x = x
-                    # Draw PURPLE Box for Target (BGR: 255, 0, 255)
-                    cv2.rectangle(img, (int(x-w/2), int(y-h/2)), (int(x+w/2), int(y+h/2)), (255, 0, 255), 3)
-                    cv2.putText(img, "TARGET", (int(x-w/2), int(y-h/2)-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 2)
+                    valid_targets.append(p)
+                    
+                # Draw ALL detections for debugging (Gray boxes for raw/ignored ones)
+                cv2.rectangle(img, (int(x-w/2), int(y-h/2)), (int(x+w/2), int(y+h/2)), (100, 100, 100), 1)
 
-        # Save Debug Image
-        cv2.imwrite(f"{CAPTURE_DIR}/DEBUG_Try{attempt_id}_AI.jpg", img)
+        # 3. LOGIC MATCHING (Find best pair)
+        best_slider = None
+        best_target = None
         
-        # 3. Calculate Distance
-        if slider_x is not None and target_x is not None:
-            distance = target_x - slider_x
-            log_msg(f"🧠 AI: Slider={slider_x:.1f}, Target={target_x:.1f}, Dist={distance:.1f}", level="step")
-            return distance
-        else:
-            log_msg("⚠️ AI missed one part. Check DEBUG image!", level="step")
-            return 0
+        # Strategy A: If we have labeled classes, use them
+        if valid_sliders and valid_targets:
+            # Sort by confidence
+            valid_sliders.sort(key=lambda k: k['confidence'], reverse=True)
+            valid_targets.sort(key=lambda k: k['confidence'], reverse=True)
             
+            temp_slider = valid_sliders[0]
+            
+            # Find a target that aligns with this slider on Y-Axis
+            for t in valid_targets:
+                # --- RULE 3: ALIGNMENT CHECK ---
+                # Y positions must be close (within 30px)
+                if abs(temp_slider['y'] - t['y']) < 30:
+                    best_slider = temp_slider
+                    best_target = t
+                    break
+        
+        # Strategy B: If AI messed up labels, just pick Leftmost and Rightmost objects
+        if not best_slider or not best_target:
+            all_objects = valid_sliders + valid_targets
+            if len(all_objects) >= 2:
+                # Sort by X position (Left to Right)
+                all_objects.sort(key=lambda k: k['x'])
+                
+                left_obj = all_objects[0] # Assume this is slider
+                
+                # Look for a matching object to the right that aligns in Y
+                for potential_target in all_objects[1:]:
+                     if abs(left_obj['y'] - potential_target['y']) < 30:
+                         best_slider = left_obj
+                         best_target = potential_target
+                         log_msg("⚠️ Using Logic Fallback (Left=Slider, Right=Target)", level="step")
+                         break
+
+        # 4. FINAL CALCULATION & DRAWING
+        if best_slider and best_target:
+            sx, sy, sw, sh = best_slider['x'], best_slider['y'], best_slider['width'], best_slider['height']
+            tx, ty, tw, th = best_target['x'], best_target['y'], best_target['width'], best_target['height']
+            
+            # Draw Final Selected Boxes (Yellow & Green)
+            cv2.rectangle(img, (int(sx-sw/2), int(sy-sh/2)), (int(sx+sw/2), int(sy+sh/2)), (0, 255, 255), 3) # Yellow
+            cv2.rectangle(img, (int(tx-tw/2), int(ty-th/2)), (int(tx+tw/2), int(ty+th/2)), (0, 255, 0), 3)   # Green
+            
+            # Draw Line connecting them
+            cv2.line(img, (int(sx), int(sy)), (int(tx), int(ty)), (255, 0, 0), 2)
+            
+            distance = tx - sx
+            log_msg(f"🧠 SMART AI: Slider@X={sx:.0f}, Target@X={tx:.0f} (Y-Diff={abs(sy-ty):.1f})", level="step")
+            
+            cv2.imwrite(f"{CAPTURE_DIR}/DEBUG_Try{attempt_id}_AI.jpg", img)
+            return distance
+            
+        else:
+            log_msg("❌ AI Filtered out bad results. Retrying...", level="step")
+            cv2.imwrite(f"{CAPTURE_DIR}/DEBUG_Try{attempt_id}_AI_FAILED.jpg", img)
+            return 0
+
     except Exception as e:
-        log_msg(f"AI Error: {e}", level="step"); return 0
+        log_msg(f"AI Logic Error: {e}", level="step"); return 0
 
 # --- CLICK LOGIC ---
 async def execute_click_strategy(page, element, strategy_id, desc):

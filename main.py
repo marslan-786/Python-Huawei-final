@@ -157,16 +157,23 @@ def call_all_ais(image_path, attempt_num):
     
     # 🔥 Updated Prompt for Percentage (0.0 to 1.0)
     prompt_text = """
-    Analyze this captcha image. It has a puzzle piece (slider) and a target hole.
-    Calculate the horizontal distance from the center of the slider to the center of the target hole.
-    
-    CRITICAL: Return the distance as a RATIO of the total image width (from 0.0 to 1.0).
-    Example: If the image width is 300px and distance is 150px, return 0.5.
-    
+    ACT AS A PRECISION VISION ANALYST.
+    Image Context: This is a puzzle slider captcha with a fixed width of 260px.
+
+    TASK:
+    1. Identify the 'movable puzzle piece' (usually on the far left).
+    2. Identify the 'target slot' (the matching hole in the background).
+    3. Determine the horizontal distance (X-axis) between the CENTER of the piece and the CENTER of the slot.
+
+    CONSTRAINTS:
+    - Use the 260px width as the absolute reference.
+    - Calculate the distance as a RATIO (distance_pixels / 260).
+    - Be extremely precise with the centers; ignore the shadows/glow, focus on the solid shape.
+
     Return ONLY a JSON object:
-    {"distance_ratio": 0.45}
-    Do not explain. Just JSON.
+    {"distance_ratio": 0.41, "pixel_distance": 107, "confidence": 0.95}
     """
+
     
     results = {"Gemini": None, "Groq": None}
     

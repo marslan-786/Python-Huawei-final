@@ -5,9 +5,7 @@ aiofiles
 numpy
 opencv-python-headless
 pillow
-rembg[cli]
-torch
-torchvision
-transformers
+rembg
+onnxruntime
 scikit-image
 jinja2

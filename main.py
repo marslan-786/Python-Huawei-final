@@ -151,39 +151,42 @@ async def show_red_dot(page, x, y):
         """)
     except: pass
 
-# --- 🧠 MULTI-AI BRAIN (GEMINI 2.0 + GROQ BACKUP) ---
+# --- 🧠 MULTI-AI BRAIN (PERCENTAGE BASED) ---
 def call_all_ais(image_path, attempt_num):
     log_msg(f"📡 AI Round {attempt_num} Requesting...", level="step")
     
+    # 🔥 Updated Prompt for Percentage (0.0 to 1.0)
     prompt_text = """
-    Analyze this captcha image. It contains a 'puzzle slider' (piece) and a 'target hole'.
-    I need the X-coordinates of the CENTER of both.
-    Return ONLY a JSON object like this:
-    {"slider_x": 100, "target_x": 450}
+    Analyze this captcha image. It has a puzzle piece (slider) and a target hole.
+    Calculate the horizontal distance from the center of the slider to the center of the target hole.
+    
+    CRITICAL: Return the distance as a RATIO of the total image width (from 0.0 to 1.0).
+    Example: If the image width is 300px and distance is 150px, return 0.5.
+    
+    Return ONLY a JSON object:
+    {"distance_ratio": 0.45}
     Do not explain. Just JSON.
     """
     
     results = {"Gemini": None, "Groq": None}
     
-    # 1. Gemini (Primary)
+    # 1. Gemini
     try:
         img_pil = Image.open(image_path)
         resp = client_gemini.models.generate_content(
-            model="gemini-2.5-flash", 
+            model="gemini-2.5-flash", # Stable
             contents=[prompt_text, img_pil]
         )
         if resp.text:
             clean_text = resp.text.replace("```json", "").replace("```", "").strip()
             data = json.loads(clean_text)
-            dist = data['target_x'] - data['slider_x']
-            results["Gemini"] = dist
-            log_msg(f"✅ Gemini Found: {dist}px (S:{data['slider_x']}, T:{data['target_x']})", level="step")
+            results["Gemini"] = data.get('distance_ratio')
+            log_msg(f"✅ Gemini Ratio: {results['Gemini']}", level="step")
     except Exception as e:
         log_msg(f"❌ Gemini Error: {e}", level="step")
 
-    # 2. Groq (Backup - Using 11b-vision explicitly)
+    # 2. Groq (Backup)
     try:
-        # Only try Groq if Gemini failed or for comparison
         if results["Gemini"] is None:
             img_b64 = encode_image(image_path)
             resp = client_groq.chat.completions.create(
@@ -192,19 +195,43 @@ def call_all_ais(image_path, attempt_num):
             )
             raw_groq = resp.choices[0].message.content
             data = json.loads(raw_groq.replace("```json", "").replace("```", "").strip())
-            dist = data['target_x'] - data['slider_x']
-            results["Groq"] = dist
-            log_msg(f"✅ Groq Found: {dist}px", level="step")
+            results["Groq"] = data.get('distance_ratio')
+            log_msg(f"✅ Groq Ratio: {results['Groq']}", level="step")
     except Exception as e:
-        # Silently fail Groq to keep logs clean if model is dead
         pass
     
     return results
 
+# --- HUMAN MOUSE MOVEMENT ---
+async def human_drag(page, start_x, start_y, end_x, end_y):
+    await page.mouse.move(start_x, start_y)
+    await page.mouse.down()
+    
+    # Calculate distance
+    distance = end_x - start_x
+    steps = 25 # Increase steps for smoother "human" look
+    
+    for i in range(steps):
+        # Ease-out function (starts fast, slows down at end)
+        progress = i / steps
+        ease = 1 - (1 - progress) * (1 - progress) 
+        
+        current_x = start_x + (distance * ease)
+        # Add tiny random Y jitter (shake hand slightly)
+        jitter_y = start_y + random.uniform(-2, 2)
+        
+        await page.mouse.move(current_x, jitter_y)
+        await asyncio.sleep(random.uniform(0.01, 0.03)) # Random tiny delays
+
+    # Final Adjustment
+    await page.mouse.move(end_x, end_y)
+    await asyncio.sleep(0.1)
+    await page.mouse.up()
+
 # --- WORKER ---
 async def master_loop():
     global BOT_RUNNING
-    log_msg("🚀 SYSTEM STARTED: Gemini Only Mode", level="main")
+    log_msg("🚀 SYSTEM STARTED: Percentage + Human Drag", level="main")
     
     while BOT_RUNNING:
         current_number = get_current_number_from_file()
@@ -249,7 +276,6 @@ async def master_loop():
 
                 # 3. PHONE INPUT
                 phone_input = page.get_by_placeholder("Phone")
-                
                 if not await phone_input.is_visible():
                     log_msg("🖱️ Clicking Phone Tab...", level="step")
                     phone_tab = page.get_by_text("Register with phone number")
@@ -262,7 +288,6 @@ async def master_loop():
                     log_msg("⌨️ Typing Number...", level="step")
                     clean_phone = current_number.replace("+", "").replace(" ", "")
                     if clean_phone.startswith("7") and len(clean_phone) > 10: clean_phone = clean_phone[1:]
-                    
                     await phone_input.click()
                     await page.keyboard.type(clean_phone, delay=100)
                     await asyncio.sleep(1)
@@ -288,7 +313,7 @@ async def master_loop():
                 # --- 🧩 CAPTCHA LOGIC ---
                 captcha_solved = False
                 
-                for attempt in range(3): # Try 3 times using Gemini
+                for attempt in range(3):
                     log_msg(f"⚔️ Round {attempt+1}: Gemini", level="main")
                     
                     puzzle = page.locator("img[src*='captcha']").first
@@ -299,26 +324,25 @@ async def master_loop():
                         sname = f"{CAPTURE_DIR}/try_{ts}_{attempt}.png"
                         await puzzle.screenshot(path=sname)
                         
-                        # Scale
-                        box = await puzzle.bounding_box()
-                        scale_ratio = box['width'] / Image.open(sname).width
-                        
-                        # Call AI
+                        # Call AI for Ratio (0.0 - 1.0)
                         all_res = call_all_ais(sname, attempt+1)
-                        chosen_dist = all_res.get("Gemini") or all_res.get("Groq")
+                        ratio = all_res.get("Gemini") or all_res.get("Groq")
                         
-                        if chosen_dist:
-                            move_px = chosen_dist * scale_ratio
-                            log_msg(f"🤖 Moving {move_px:.2f}px", level="step")
+                        if ratio:
+                            # Calculate Pixels based on ACTUAL Browser Element Width
+                            box = await puzzle.bounding_box()
+                            actual_width = box['width']
+                            move_px = ratio * actual_width
+                            
+                            log_msg(f"🤖 Move Ratio: {ratio} | Px: {move_px:.2f}", level="step")
                             
                             slider = page.locator(".geetest_slider_button").or_(page.locator(".nc_iconfont.btn_slide")).or_(page.locator(".yidun_slider"))
                             if await slider.count() > 0:
                                 s_box = await slider.bounding_box()
                                 sx, sy = s_box['x'] + s_box['width']/2, s_box['y'] + s_box['height']/2
                                 
-                                await page.mouse.move(sx, sy); await page.mouse.down()
-                                await page.mouse.move(sx + move_px, sy)
-                                await page.mouse.up()
+                                # 🔥 HUMAN DRAG
+                                await human_drag(page, sx, sy, sx + move_px, sy)
                                 
                                 log_msg("⏳ Verifying (10s)...", level="step")
                                 await asyncio.sleep(10)

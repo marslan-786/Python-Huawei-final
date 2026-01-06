@@ -19,30 +19,38 @@ import cv2
 import numpy as np
 
 # --- 🧠 AI CLIENTS SETUP ---
+AI_LIBS_INSTALLED = False
 try:
-    import google.generativeai as genai
+    # Using the NEW Google Library as per your request
+    from google import genai
     from anthropic import Anthropic
     from groq import Groq
     AI_LIBS_INSTALLED = True
 except ImportError as e:
     print(f"❌ CRITICAL ERROR: AI Libraries missing! {e}")
-    AI_LIBS_INSTALLED = False
 
-# 🔑 API KEYS (Hardcoded)
-KEY_GEMINI = "AIzaSyD2kBM01JsV1GEYPFbo6U0iayd49bxASo0"
+# 🔑 API KEYS
+KEY_GEMINI = "AIzaSyDwlqeEBewOFBTy-_NWWOvV7ksvow7oC3c"
 KEY_CLAUDE = "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"
 KEY_GROQ = "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"
 
-# Init Clients (Wrap in try to catch init errors)
+# Init Clients
+gemini_client = None
+anthropic_client = None
+groq_client = None
+
 try:
     if AI_LIBS_INSTALLED:
-        genai.configure(api_key=KEY_GEMINI)
+        # Gemini Client (New Lib)
+        gemini_client = genai.Client(api_key=KEY_GEMINI)
+        # Claude Client (Note: Your key is reporting Invalid 401)
         anthropic_client = Anthropic(api_key=KEY_CLAUDE)
+        # Groq Client
         groq_client = Groq(api_key=KEY_GROQ)
 except Exception as e:
     print(f"❌ Client Init Error: {e}")
 
-# --- SYSTEM PATHS & CONFIG ---
+# --- CONFIG ---
 BASE_URL = "https://id8.cloud.huawei.com/CAS/portal/login.html" # 🇷🇺 Russia Server
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CAPTURE_DIR = os.path.join(BASE_DIR, "captures")
@@ -151,65 +159,64 @@ async def show_red_dot(page, x, y):
         """)
     except: pass
 
-# --- 🧠 MULTI-AI BRAIN (WITH ERROR LOGGING) ---
+# --- 🧠 MULTI-AI BRAIN (FIXED MODELS) ---
 def call_all_ais(image_path, attempt_num):
     log_msg(f"📡 AI Round {attempt_num} Requesting...", level="step")
     
-    if not os.path.exists(image_path):
-        log_msg("❌ Error: Image file not found on disk!", level="main")
-        return {"Gemini": None}
-
-    prompt = """
+    prompt_text = """
     Analyze this captcha image. It contains a 'puzzle slider' (piece) and a 'target hole'.
     I need the X-coordinates of the CENTER of both.
     Return ONLY a JSON object like this:
     {"slider_x": 100, "target_x": 450}
     Do not explain. Just JSON.
     """
+    
     results = {"Gemini": None, "Groq": None, "Claude": None}
     
-    # 1. Gemini (Using 2.0 Flash Exp)
+    # 1. Gemini (Switched to Stable 1.5-flash)
     try:
-        # Using the latest 2.0 model or falling back to 1.5 if 2.0 is not available to your key
-        model = genai.GenerativeModel('gemini-2.0-flash-exp') 
         img_pil = Image.open(image_path)
-        resp = model.generate_content([prompt, img_pil])
-        log_msg(f"🔹 Gemini Raw: {resp.text[:50]}...", level="step") # Debug raw response
-        data = json.loads(resp.text.replace("```json", "").replace("```", "").strip())
+        resp = gemini_client.models.generate_content(
+            model="gemini-1.5-flash", # ✅ Stable & Free
+            contents=[prompt_text, img_pil]
+        )
+        clean_text = resp.text.replace("```json", "").replace("```", "").strip()
+        data = json.loads(clean_text)
         results["Gemini"] = data['target_x'] - data['slider_x']
     except Exception as e:
-        log_msg(f"❌ Gemini Error: {str(e)}", level="step") # PRINT THE ERROR
+        log_msg(f"❌ Gemini Error: {e}", level="step")
 
-    # 2. Groq
+    # 2. Groq (Updated Model Name)
     try:
         img_b64 = encode_image(image_path)
         resp = groq_client.chat.completions.create(
-            messages=[{"role": "user", "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}]}],
-            model="llama-3.2-11b-vision-preview"
+            messages=[{"role": "user", "content": [{"type": "text", "text": prompt_text}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}]}],
+            model="llama-3.2-90b-vision-preview" # ✅ Updated from 11b (which died) to 90b
         )
         data = json.loads(resp.choices[0].message.content.replace("```json", "").replace("```", "").strip())
         results["Groq"] = data['target_x'] - data['slider_x']
     except Exception as e:
-        log_msg(f"❌ Groq Error: {str(e)}", level="step")
+        log_msg(f"❌ Groq Error: {e}", level="step")
 
     # 3. Claude
     try:
         img_b64 = encode_image(image_path)
         resp = anthropic_client.messages.create(
             model="claude-3-haiku-20240307", max_tokens=100,
-            messages=[{"role": "user", "content": [{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": img_b64}}, {"type": "text", "text": prompt}]}]
+            messages=[{"role": "user", "content": [{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": img_b64}}, {"type": "text", "text": prompt_text}]}]
         )
         data = json.loads(resp.content[0].text.replace("```json", "").replace("```", "").strip())
         results["Claude"] = data['target_x'] - data['slider_x']
     except Exception as e:
-        log_msg(f"❌ Claude Error: {str(e)}", level="step")
+        log_msg(f"❌ Claude Error: {e}", level="step") # Likely 401 (Invalid Key)
     
+    log_msg(f"🧠 Results: Gem:{results['Gemini']}, Groq:{results['Groq']}", level="step")
     return results
 
 # --- WORKER ---
 async def master_loop():
     global BOT_RUNNING
-    log_msg("🚀 SYSTEM STARTED: ID8 Russia Mode", level="main")
+    log_msg("🚀 SYSTEM STARTED: ID8 Russia (Gemini 1.5 + Fixed Phone)", level="main")
     
     while BOT_RUNNING:
         current_number = get_current_number_from_file()
@@ -238,7 +245,7 @@ async def master_loop():
                 except:
                     log_msg("💀 Page Load Timeout.", level="main"); await browser.close(); continue
 
-                # 2. CLICK REGISTER (Only if needed)
+                # 2. CLICK REGISTER (Smart Check)
                 if await page.get_by_text("Register HUAWEI ID", exact=True).count() == 0:
                     reg_btn = page.get_by_text("Register", exact=True).or_(page.get_by_text("Sign up", exact=True))
                     if await reg_btn.count() > 0:
@@ -247,11 +254,14 @@ async def master_loop():
                         await capture_step(page, "2_Register_Clicked")
                         log_msg("⏳ Waiting 3s after Register click...", level="step")
                         await asyncio.sleep(3)
+                    else:
+                        log_msg("✅ Probably already on Register Page.", level="step")
                 else:
                     log_msg("✅ Already on Register Page.", level="step")
 
-                # 3. PHONE INPUT
+                # 3. PHONE INPUT (FIXED LOGIC)
                 phone_input = page.get_by_placeholder("Phone")
+                
                 if not await phone_input.is_visible():
                     log_msg("🖱️ Clicking Phone Tab...", level="step")
                     phone_tab = page.get_by_text("Register with phone number")
@@ -270,7 +280,7 @@ async def master_loop():
                     await asyncio.sleep(1)
                     await capture_step(page, "4_Number_Typed")
                 else:
-                    log_msg("💀 Phone Input Field Missing!", level="main")
+                    log_msg("💀 Phone Input Missing! (Placeholder 'Phone' not found)", level="main")
                     await capture_step(page, "Error_No_Input")
                     await browser.close(); continue
 
@@ -357,7 +367,7 @@ async def master_loop():
         except Exception as e:
             log_msg(f"🔥 CRASH: {e}", level="main"); await asyncio.sleep(5)
 
-# --- WEB ROUTES (SAME AS BEFORE) ---
+# --- WEB ROUTES ---
 @app.get("/")
 async def read_index(): return FileResponse('index.html')
 

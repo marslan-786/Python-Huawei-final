@@ -199,7 +199,7 @@ def call_all_ais(image_path, attempt_num):
     try:
         img_pil = Image.open(optimized_img_path)
         resp = client_gemini.models.generate_content(
-            model="gemini-1.5-flash", 
+            model="gemini-2.5-flash", 
             contents=[prompt_text, img_pil]
         )
         if resp.text:

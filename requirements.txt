@@ -3,9 +3,9 @@ uvicorn
 playwright
 python-multipart
 aiofiles
-google-generativeai
+google-genai
 anthropic
 groq
 pillow
-numpy
 opencv-python-headless
+numpy

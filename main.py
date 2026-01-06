@@ -18,40 +18,35 @@ from PIL import Image
 import cv2
 import numpy as np
 
-# --- 🧠 AI CLIENTS SETUP ---
-AI_LIBS_INSTALLED = False
-try:
-    # Using the NEW Google Library as per your request
-    from google import genai
-    from anthropic import Anthropic
-    from groq import Groq
-    AI_LIBS_INSTALLED = True
-except ImportError as e:
-    print(f"❌ CRITICAL ERROR: AI Libraries missing! {e}")
+# --- 🧠 NEW AI LIBRARIES ---
+# If these fail, the bot will CRASH intentionally so you know to install them.
+from google import genai  # 🔥 The NEW Library
+from anthropic import Anthropic
+from groq import Groq
 
 # 🔑 API KEYS
-KEY_GEMINI = "AIzaSyDwlqeEBewOFBTy-_NWWOvV7ksvow7oC3c"
+KEY_GEMINI = "AIzaSyD2kBM01JsV1GEYPFbo6U0iayd49bxASo0"
 KEY_CLAUDE = "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"
 KEY_GROQ = "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"
 
-# Init Clients
-gemini_client = None
-anthropic_client = None
-groq_client = None
-
+# --- INIT CLIENTS (Global) ---
+print("🔌 Initializing AI Clients...")
 try:
-    if AI_LIBS_INSTALLED:
-        # Gemini Client (New Lib)
-        gemini_client = genai.Client(api_key=KEY_GEMINI)
-        # Claude Client (Note: Your key is reporting Invalid 401)
-        anthropic_client = Anthropic(api_key=KEY_CLAUDE)
-        # Groq Client
-        groq_client = Groq(api_key=KEY_GROQ)
+    # 1. Gemini (New Client Style)
+    client_gemini = genai.Client(api_key=KEY_GEMINI)
+    
+    # 2. Claude
+    client_claude = Anthropic(api_key=KEY_CLAUDE)
+    
+    # 3. Groq
+    client_groq = Groq(api_key=KEY_GROQ)
+    print("✅ All AI Clients Connected.")
 except Exception as e:
-    print(f"❌ Client Init Error: {e}")
+    print(f"❌ FATAL ERROR in Client Init: {e}")
+    exit(1) # Stop app if keys are wrong
 
 # --- CONFIG ---
-BASE_URL = "https://id8.cloud.huawei.com/CAS/portal/login.html" # 🇷🇺 Russia Server
+BASE_URL = "https://id8.cloud.huawei.com/CAS/portal/login.html"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CAPTURE_DIR = os.path.join(BASE_DIR, "captures")
 NUMBERS_FILE = os.path.join(BASE_DIR, "numbers.txt")
@@ -159,7 +154,7 @@ async def show_red_dot(page, x, y):
         """)
     except: pass
 
-# --- 🧠 MULTI-AI BRAIN (FIXED MODELS) ---
+# --- 🧠 MULTI-AI BRAIN (NEW LIBRARY LOGIC) ---
 def call_all_ais(image_path, attempt_num):
     log_msg(f"📡 AI Round {attempt_num} Requesting...", level="step")
     
@@ -173,27 +168,37 @@ def call_all_ais(image_path, attempt_num):
     
     results = {"Gemini": None, "Groq": None, "Claude": None}
     
-    # 1. Gemini (Switched to Stable 1.5-flash)
+    # 1. Gemini (NEW google-genai Library)
     try:
         img_pil = Image.open(image_path)
-        resp = gemini_client.models.generate_content(
-            model="gemini-1.5-flash", # ✅ Stable & Free
+        # 🔥 NEW SYNTAX for 2.0/2.5
+        resp = client_gemini.models.generate_content(
+            model="gemini-2.5-flash", 
             contents=[prompt_text, img_pil]
         )
-        clean_text = resp.text.replace("```json", "").replace("```", "").strip()
-        data = json.loads(clean_text)
-        results["Gemini"] = data['target_x'] - data['slider_x']
+        
+        # Log Response for debugging
+        if resp.text:
+            log_msg(f"🔹 Gemini Raw: {resp.text}", level="step") # Showing raw response
+            clean_text = resp.text.replace("```json", "").replace("```", "").strip()
+            data = json.loads(clean_text)
+            results["Gemini"] = data['target_x'] - data['slider_x']
+        else:
+            log_msg("❌ Gemini returned Empty Text", level="step")
+            
     except Exception as e:
         log_msg(f"❌ Gemini Error: {e}", level="step")
 
-    # 2. Groq (Updated Model Name)
+    # 2. Groq
     try:
         img_b64 = encode_image(image_path)
-        resp = groq_client.chat.completions.create(
+        resp = client_groq.chat.completions.create(
             messages=[{"role": "user", "content": [{"type": "text", "text": prompt_text}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}]}],
-            model="llama-3.2-90b-vision-preview" # ✅ Updated from 11b (which died) to 90b
+            model="llama-3.2-90b-vision-preview" 
         )
-        data = json.loads(resp.choices[0].message.content.replace("```json", "").replace("```", "").strip())
+        raw_groq = resp.choices[0].message.content
+        log_msg(f"🔸 Groq Raw: {raw_groq}", level="step") # Showing raw response
+        data = json.loads(raw_groq.replace("```json", "").replace("```", "").strip())
         results["Groq"] = data['target_x'] - data['slider_x']
     except Exception as e:
         log_msg(f"❌ Groq Error: {e}", level="step")
@@ -201,22 +206,23 @@ def call_all_ais(image_path, attempt_num):
     # 3. Claude
     try:
         img_b64 = encode_image(image_path)
-        resp = anthropic_client.messages.create(
+        resp = client_claude.messages.create(
             model="claude-3-haiku-20240307", max_tokens=100,
             messages=[{"role": "user", "content": [{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": img_b64}}, {"type": "text", "text": prompt_text}]}]
         )
-        data = json.loads(resp.content[0].text.replace("```json", "").replace("```", "").strip())
+        raw_claude = resp.content[0].text
+        log_msg(f"🔺 Claude Raw: {raw_claude}", level="step")
+        data = json.loads(raw_claude.replace("```json", "").replace("```", "").strip())
         results["Claude"] = data['target_x'] - data['slider_x']
     except Exception as e:
-        log_msg(f"❌ Claude Error: {e}", level="step") # Likely 401 (Invalid Key)
+        log_msg(f"❌ Claude Error: {e}", level="step")
     
-    log_msg(f"🧠 Results: Gem:{results['Gemini']}, Groq:{results['Groq']}", level="step")
     return results
 
 # --- WORKER ---
 async def master_loop():
     global BOT_RUNNING
-    log_msg("🚀 SYSTEM STARTED: ID8 Russia (Gemini 1.5 + Fixed Phone)", level="main")
+    log_msg("🚀 SYSTEM STARTED: ID8 Russia (New GenAI Lib)", level="main")
     
     while BOT_RUNNING:
         current_number = get_current_number_from_file()
@@ -245,7 +251,7 @@ async def master_loop():
                 except:
                     log_msg("💀 Page Load Timeout.", level="main"); await browser.close(); continue
 
-                # 2. CLICK REGISTER (Smart Check)
+                # 2. CLICK REGISTER
                 if await page.get_by_text("Register HUAWEI ID", exact=True).count() == 0:
                     reg_btn = page.get_by_text("Register", exact=True).or_(page.get_by_text("Sign up", exact=True))
                     if await reg_btn.count() > 0:
@@ -259,7 +265,7 @@ async def master_loop():
                 else:
                     log_msg("✅ Already on Register Page.", level="step")
 
-                # 3. PHONE INPUT (FIXED LOGIC)
+                # 3. PHONE INPUT (FIXED SELECTOR)
                 phone_input = page.get_by_placeholder("Phone")
                 
                 if not await phone_input.is_visible():

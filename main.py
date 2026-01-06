@@ -16,7 +16,6 @@ import uvicorn
 from roboflow import Roboflow # 🔥 YOUR CUSTOM AI
 
 # --- 🔥 ROBOFLOW CONFIG (YOUR BRAIN) 🔥 ---
-# Updated Private Key
 API_KEY = "qhWhd58392JPdrKDXAKk"
 MODEL_ID = "my-first-project-0rbwa/3"
 
@@ -32,7 +31,7 @@ NUMBERS_FILE = os.path.join(BASE_DIR, "numbers.txt")
 SUCCESS_FILE = os.path.join(BASE_DIR, "success.txt")
 FAILED_FILE = os.path.join(BASE_DIR, "failed.txt")
 PROXY_FILE = os.path.join(BASE_DIR, "proxies.txt")
-BASE_URL = "https://id8.cloud.huawei.com/"
+BASE_URL = "https://id8.cloud.huawei.com/CAS/portal/login.html"
 
 app = FastAPI()
 if not os.path.exists(CAPTURE_DIR): os.makedirs(CAPTURE_DIR)
@@ -184,8 +183,11 @@ async def show_red_dot(page, x, y):
 # --- 🔥 CUSTOM AI SOLVER LOGIC 🔥 ---
 def solve_puzzle_with_roboflow(image_path, attempt_id):
     try:
-        # 1. Send Image to Your Brain
-        prediction = model.predict(image_path, confidence=40, overlap=30).json()
+        # 🔥 CONFIDENCE LEVEL: 5% (Detect everything!)
+        prediction = model.predict(image_path, confidence=5, overlap=50).json()
+        
+        # Log the raw response to debug
+        # log_msg(f"RAW PREDICTION: {prediction}", level="step")
         
         slider_x = None
         target_x = None
@@ -194,26 +196,29 @@ def solve_puzzle_with_roboflow(image_path, attempt_id):
         img = cv2.imread(image_path)
         
         # 2. Parse Predictions
-        for p in prediction['predictions']:
-            x = p['x']
-            y = p['y']
-            w = p['width']
-            h = p['height']
-            class_name = p['class']
-            
-            # Save coordinates
-            if class_name == "slider":
-                slider_x = x
-                # Draw Red Box for Slider
-                cv2.rectangle(img, (int(x-w/2), int(y-h/2)), (int(x+w/2), int(y+h/2)), (0, 0, 255), 2)
-                cv2.putText(img, "SLIDER", (int(x-w/2), int(y-h/2)-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+        if 'predictions' in prediction:
+            for p in prediction['predictions']:
+                x = p['x']
+                y = p['y']
+                w = p['width']
+                h = p['height']
+                class_name = p['class']
+                confidence = p['confidence']
                 
-            elif class_name == "target":
-                target_x = x
-                # Draw GREEN Box for Target (Visual Confirmation)
-                # (B, G, R) -> (0, 255, 0) is Green
-                cv2.rectangle(img, (int(x-w/2), int(y-h/2)), (int(x+w/2), int(y+h/2)), (0, 255, 0), 3)
-                cv2.putText(img, "TARGET", (int(x-w/2), int(y-h/2)-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                log_msg(f"Found {class_name} at X={x:.1f} with {confidence*100:.1f}% confidence", level="step")
+
+                # Save coordinates
+                if class_name == "slider":
+                    slider_x = x
+                    # Draw YELLOW Box for Slider (BGR: 0, 255, 255)
+                    cv2.rectangle(img, (int(x-w/2), int(y-h/2)), (int(x+w/2), int(y+h/2)), (0, 255, 255), 2)
+                    cv2.putText(img, "SLIDER", (int(x-w/2), int(y-h/2)-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+                    
+                elif class_name == "target":
+                    target_x = x
+                    # Draw PURPLE Box for Target (BGR: 255, 0, 255)
+                    cv2.rectangle(img, (int(x-w/2), int(y-h/2)), (int(x+w/2), int(y+h/2)), (255, 0, 255), 3)
+                    cv2.putText(img, "TARGET", (int(x-w/2), int(y-h/2)-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 2)
 
         # Save Debug Image
         cv2.imwrite(f"{CAPTURE_DIR}/DEBUG_Try{attempt_id}_AI.jpg", img)
@@ -224,7 +229,7 @@ def solve_puzzle_with_roboflow(image_path, attempt_id):
             log_msg(f"🧠 AI: Slider={slider_x:.1f}, Target={target_x:.1f}, Dist={distance:.1f}", level="step")
             return distance
         else:
-            log_msg("⚠️ AI could not find both Slider and Target.", level="step")
+            log_msg("⚠️ AI missed one part. Check DEBUG image!", level="step")
             return 0
             
     except Exception as e:
@@ -344,6 +349,8 @@ async def run_huawei_session(phone, proxy):
                             
                             if await puzzle_img.count() > 0:
                                 await capture_step(page, f"Try_{attempt_count}_Start")
+                                
+                                # 🔥 IMPORTANT: CAPTURE ONLY THE CAPTCHA ELEMENT 🔥
                                 await puzzle_img.screenshot(path="temp_puzzle.png")
                                 
                                 # Scale Calc
@@ -370,7 +377,6 @@ async def run_huawei_session(phone, proxy):
                                         target_x = start_x + distance
                                         
                                         # 🔥 ROBOTIC MOVEMENT (STRAIGHT LINE) 🔥
-                                        # No random Y loops, just straight 5 steps move
                                         await page.mouse.move(target_x, start_y, steps=5) 
                                         
                                         await show_red_dot(page, target_x, start_y)

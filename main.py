@@ -4,7 +4,6 @@ import asyncio
 import random
 import time
 import shutil
-import imageio
 from datetime import datetime
 from typing import Optional
 from urllib.parse import urlparse
@@ -113,51 +112,62 @@ async def capture_step(page, step_name, wait_time=0, force=False):
 
 async def show_red_dot(page, x, y):
     try:
+        # Puts a red dot on screen for visualization
         await page.evaluate(f"""
             var dot = document.createElement('div');
             dot.style.position = 'absolute'; 
             dot.style.left = '{x-15}px'; dot.style.top = '{y-15}px';
             dot.style.width = '30px'; dot.style.height = '30px'; 
-            dot.style.background = 'rgba(255, 0, 0, 0.9)'; 
-            dot.style.borderRadius = '50%'; dot.style.zIndex = '2147483647'; 
+            dot.style.background = 'rgba(255, 0, 0, 0.7)'; 
+            dot.style.borderRadius = '50%'; dot.style.zIndex = '999999'; 
             dot.style.pointerEvents = 'none'; dot.style.border = '3px solid white'; 
             document.body.appendChild(dot);
-            setTimeout(() => {{ dot.remove(); }}, 1000);
+            setTimeout(() => {{ dot.remove(); }}, 1500);
         """)
     except: pass
 
 # --- CLICK LOGIC ---
 async def click_element(page, finder, name):
     try:
-        # User requested Text locators primarily, no button strategy
         el = finder()
         if await el.count() > 0:
+            # Scroll into view first
+            try: await el.first.scroll_into_view_if_needed()
+            except: pass
+            
             box = await el.first.bounding_box()
             if box:
                 cx = box['x'] + box['width'] / 2
                 cy = box['y'] + box['height'] / 2
-                log_msg(f"🖱️ Clicking {name}...", level="step")
+                
+                log_msg(f"🖱️ Tapping {name}...", level="step")
+                
+                # 🔥 SHOW RED DOT BEFORE CLICK
                 await show_red_dot(page, cx, cy)
-                await page.touchscreen.tap(cx, cy) # Using Tap as it's mobile view
+                await asyncio.sleep(0.2) # Small delay to ensure dot renders in screenshots if concurrent
+                
+                # Tap
+                await page.touchscreen.tap(cx, cy)
                 return True
         return False
     except: return False
 
-# 🔥 SMART ACTION LOGIC (Wait & Retry) 🔥
-async def smart_action(page, finder, verifier, step_name, wait_after=3):
+# 🔥 SMART ACTION LOGIC (Updated Wait Times) 🔥
+async def smart_action(page, finder, verifier, step_name, wait_after=5):
     if not BOT_RUNNING: return False
     
-    # 1. Initial Wait
+    # 1. Initial Wait & Check
     try:
-        log_msg(f"🔍 Looking for {step_name}...", level="step")
-        await page.wait_for_selector("body", timeout=5000)
+        log_msg(f"🔍 Checking for {step_name}...", level="step")
+        # Pre-Click Capture to see what bot sees
+        await capture_step(page, f"Pre_{step_name}")
     except: pass
 
-    # 2. Try Clicking
-    for attempt in range(1, 4): # 3 Attempts
+    # 2. Try Clicking (3 Attempts)
+    for attempt in range(1, 4): 
         if not BOT_RUNNING: return False
         
-        # Already verified?
+        # Verify if already done?
         if verifier and await verifier().count() > 0:
             log_msg(f"✅ {step_name} Already Done.", level="step")
             return True
@@ -166,6 +176,9 @@ async def smart_action(page, finder, verifier, step_name, wait_after=3):
         clicked = await click_element(page, finder, f"{step_name} (Try {attempt})")
         
         if clicked:
+            # Capture Click Action (With Red Dot potentially visible)
+            await capture_step(page, f"Click_{step_name}_{attempt}")
+            
             log_msg(f"⏳ Waiting {wait_after}s...", level="step")
             await asyncio.sleep(wait_after)
             
@@ -175,18 +188,19 @@ async def smart_action(page, finder, verifier, step_name, wait_after=3):
                 await capture_step(page, f"Post_{step_name}")
                 return True
             
-            # Check if button still there
+            # Check if button still there (Click Failed)
             elif await finder().count() > 0:
                 log_msg(f"⚠️ {step_name} click failed (Button visible). Retrying...", level="step")
                 await capture_step(page, f"Fail_{step_name}")
                 continue 
             
-            # Loading check
+            # Loading check (Both gone)
             else:
-                log_msg(f"⏳ Elements gone (Loading?)... Waiting 5s...", level="step")
+                log_msg(f"⏳ Elements gone (Loading?)... Waiting 5s more...", level="step")
                 await asyncio.sleep(5)
                 if verifier and await verifier().count() > 0:
                     log_msg(f"✅ {step_name} Success (After Load)!", level="step")
+                    await capture_step(page, f"Post_{step_name}_Delayed")
                     return True
                 else:
                     log_msg(f"⚠️ Stuck / Loading...", level="step")
@@ -259,51 +273,48 @@ async def run_session(phone, country, proxy):
                 await capture_step(page, "01_Loaded")
             except: return "retry"
 
-            # --- STEP 2: REGISTER (By Text) ---
+            # --- STEP 2: REGISTER (Text Based) ---
             if not await smart_action(
                 page, 
-                lambda: page.get_by_text("Register", exact=False), # Finder: Text "Register"
-                lambda: page.get_by_text("Agree", exact=False).or_(page.get_by_text("Stay informed", exact=False)), # Verifier
+                lambda: page.get_by_text("Register", exact=False), 
+                lambda: page.get_by_text("Agree", exact=False).or_(page.get_by_text("Stay informed", exact=False)), 
                 "Register_Text",
-                wait_after=3
+                wait_after=5
             ): return "retry"
 
-            # --- STEP 3: AGREE (Text Logic) ---
-            # 1. Stay Informed (Text)
+            # --- STEP 3: AGREE PAGE ---
+            
+            # A. Click "Stay informed" (Red Dot Check)
             cb = page.get_by_text("Stay informed", exact=False)
             if await cb.count() > 0:
-                log_msg("🖱️ Tapping Stay informed...", level="step")
-                await cb.click()
+                await click_element(page, lambda: cb, "Stay Informed Checkbox")
                 await asyncio.sleep(1)
             
-            # 2. Agree (Last)
-            # User: "Agree text ke tor pe... aur last wala agree"
+            # B. Click "Agree" (Last Text)
             if not await smart_action(
                 page,
-                lambda: page.get_by_text("Agree", exact=False).last, # Finder: LAST "Agree" text
+                lambda: page.get_by_text("Agree", exact=False).last, 
                 lambda: page.get_by_text("Date of birth", exact=False),
                 "Agree_Last",
-                wait_after=3
+                wait_after=5
             ): return "retry"
 
-            # --- STEP 4: DOB (No Scroll, Just Next) ---
-            # User: "Scroll khatam... sirf next kare... last wala next"
+            # --- STEP 4: DOB (Next Text Only) ---
             if not await smart_action(
                 page,
-                lambda: page.get_by_text("Next", exact=False).last, # Finder: LAST "Next" text
+                lambda: page.get_by_text("Next", exact=False).last, 
                 lambda: page.get_by_text("Use phone number", exact=False),
-                "DOB_Next_Last",
-                wait_after=3
+                "DOB_Next_Text",
+                wait_after=5
             ): return "retry"
 
-            # --- STEP 5: PHONE TAB (By Text) ---
-            # User: "Use phone number usko bhi text ke tor pe dhundo"
+            # --- STEP 5: PHONE TAB (Text) ---
             if not await smart_action(
                 page,
                 lambda: page.get_by_text("Use phone number", exact=False),
                 lambda: page.get_by_text("Country/Region"), 
                 "UsePhone_Text",
-                wait_after=3
+                wait_after=5
             ): return "retry"
 
             # --- STEP 6: COUNTRY ---
@@ -315,7 +326,7 @@ async def run_session(phone, country, proxy):
                 lambda: page.get_by_text("Hong Kong", exact=False).or_(page.locator(".arrow-icon").first),
                 lambda: page.get_by_placeholder("Search", exact=False),
                 "Open_Country_List",
-                wait_after=2
+                wait_after=3
             ): return "retry"
 
             # Search & Select
@@ -327,8 +338,8 @@ async def run_session(phone, country, proxy):
             
             matches = page.get_by_text(country, exact=False)
             if await matches.count() > 0:
-                await matches.first.click()
-                await asyncio.sleep(3) # 3s wait
+                await click_element(page, lambda: matches.first, f"Country: {country}")
+                await asyncio.sleep(3) 
             else:
                 log_msg("❌ Country Not Found", level="main"); await browser.close(); return "retry"
 
@@ -342,19 +353,30 @@ async def run_session(phone, country, proxy):
                 for c in phone:
                     if not BOT_RUNNING: return "stopped"
                     await page.keyboard.type(c); await asyncio.sleep(0.05)
-                await page.touchscreen.tap(350, 100) # Close keyboard
+                
+                # Tap outside
+                await show_red_dot(page, 350, 100)
+                await page.touchscreen.tap(350, 100) 
+                
                 await capture_step(page, "05_Filled")
                 
-                # --- STEP 8: GET CODE (CRITICAL WAIT) ---
+                # --- STEP 8: GET CODE ---
                 get_code = page.locator(".get-code-btn").or_(page.get_by_text("Get code"))
                 if await get_code.count() > 0:
-                    await get_code.first.click()
                     
-                    # 🔥 HARD WAIT 10 SECONDS 🔥
+                    # CLICK GET CODE
+                    await click_element(page, lambda: get_code.first, "Get Code Button")
+                    
+                    # 🔥 10 SECONDS WAIT & MONITOR 🔥
                     log_msg("⏳ Hard Wait: 10s for Captcha...", level="main")
-                    await capture_step(page, "06_Clicked_GetCode", wait_time=5) # 5s Capture
-                    await asyncio.sleep(5) # Total 10s
-                    await capture_step(page, "07_Wait_Done")
+                    
+                    # Capture at 5s
+                    await asyncio.sleep(5) 
+                    await capture_step(page, "06_Wait_5s_Check")
+                    
+                    # Capture at 10s
+                    await asyncio.sleep(5) 
+                    await capture_step(page, "07_Wait_10s_Check")
 
                     # CHECK STATE
                     if await page.get_by_text("An unexpected problem", exact=False).count() > 0:
@@ -362,7 +384,7 @@ async def run_session(phone, country, proxy):
                         await capture_step(page, "Error_Popup", force=True)
                         await browser.close(); return "failed"
 
-                    # Captcha Logic (Using previous script logic)
+                    # Captcha Check
                     start_solve_time = time.time()
                     while BOT_RUNNING:
                         if time.time() - start_solve_time > 120: break
@@ -396,7 +418,7 @@ async def run_session(phone, country, proxy):
                             await capture_step(page, "Success_Direct", force=True)
                             await browser.close(); return "success"
                         
-                        # 3. NOTHING (HARD SKIP)
+                        # 3. NOTHING
                         log_msg("❌ No Captcha & No Success.", level="main")
                         await capture_step(page, "Error_Nothing", force=True)
                         await browser.close(); return "failed"
@@ -412,7 +434,7 @@ async def run_session(phone, country, proxy):
         return "retry"
     except: return "retry"
 
-# --- API ENDPOINTS (RESTORED) ---
+# --- API ENDPOINTS ---
 @app.get("/")
 async def read_index(): return FileResponse('index.html')
 

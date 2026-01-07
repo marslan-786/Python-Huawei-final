@@ -13,14 +13,14 @@ from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from playwright.async_api import async_playwright
 
-# --- 🔥 USER SETTINGS (CONTROL CENTER) 🔥 ---
-live_logs = True  # True = ہر سٹیپ کی تصویر | False = صرف Success/Error
+# --- 🔥 USER SETTINGS ---
+live_logs = True 
 
-# --- 🔥 HARDCODED SCRAPER API (RESIDENTIAL MODE) 🔥 ---
+# --- 🔥 HARDCODED SCRAPER API ---
 API_KEY = '9643e678c2fa6efe4d2c7cf7b2206be0'
 SCRAPER_PROXY_URL = f"http://scraperapi.residential=true:{API_KEY}@proxy-server.scraperapi.com:8001"
 
-# --- CONFIGURATION ---
+# --- CONFIG ---
 CAPTURE_DIR = "./captures"
 NUMBERS_FILE = "numbers.txt"
 SUCCESS_FILE = "success.txt"
@@ -28,12 +28,11 @@ FAILED_FILE = "failed.txt"
 PROXY_FILE = "proxies.txt"
 BASE_URL = "https://id5.cloud.huawei.com"
 
-# --- INITIALIZE APP ---
 app = FastAPI()
 if not os.path.exists(CAPTURE_DIR): os.makedirs(CAPTURE_DIR)
 app.mount("/captures", StaticFiles(directory=CAPTURE_DIR), name="captures")
 
-# Files initialization
+# File Init
 for f in [NUMBERS_FILE, SUCCESS_FILE, FAILED_FILE, PROXY_FILE]:
     if not os.path.exists(f): open(f, 'w').close()
 
@@ -46,7 +45,7 @@ SETTINGS = {"country": "Russia", "proxy_manual": ""}
 BOT_RUNNING = False
 logs = []
 
-# --- LOGGER ---
+# --- HELPERS ---
 def log_msg(message, level="step"):
     timestamp = datetime.now().strftime("%H:%M:%S")
     entry = f"[{timestamp}] {message}"
@@ -54,7 +53,6 @@ def log_msg(message, level="step"):
     logs.insert(0, entry)
     if len(logs) > 500: logs.pop()
 
-# --- FILE MANAGERS ---
 def save_data(filename, data):
     with open(filename, "a", encoding="utf-8") as f: f.write(f"{data}\n")
 
@@ -103,92 +101,10 @@ def get_strict_proxy():
         except: pass
     return parse_proxy_string(SCRAPER_PROXY_URL)
 
-# --- API ENDPOINTS ---
-@app.get("/")
-async def read_index(): return FileResponse('index.html')
-
-@app.get("/status")
-async def get_status():
-    files = sorted(glob.glob(f'{CAPTURE_DIR}/*.jpg'), key=os.path.getmtime, reverse=True)[:10]
-    images = [f"/captures/{os.path.basename(f)}" for f in files]
-    p_check = get_strict_proxy()
-    p_disp = p_check['server'] if p_check else "❌ No Proxy"
-    
-    stats = {
-        "remaining": count_lines(NUMBERS_FILE),
-        "success": count_lines(SUCCESS_FILE),
-        "failed": count_lines(FAILED_FILE)
-    }
-    
-    return JSONResponse({
-        "logs": logs[:50], 
-        "images": images, 
-        "running": BOT_RUNNING, 
-        "current_country": SETTINGS["country"], 
-        "current_proxy": p_disp,
-        "stats": stats
-    })
-
-@app.get("/download/{ftype}")
-async def download_file(ftype: str):
-    fname = f"{ftype}.txt"
-    if os.path.exists(fname): return FileResponse(fname, filename=fname)
-    return {"error": "File not found"}
-
-@app.post("/clear_data")
-async def clear_data():
-    global logs
-    logs = []
-    # Clear Files except proxies
-    open(NUMBERS_FILE, 'w').close()
-    open(SUCCESS_FILE, 'w').close()
-    open(FAILED_FILE, 'w').close()
-    # Clear Captures
-    for f in glob.glob(f'{CAPTURE_DIR}/*'): os.remove(f)
-    log_msg("🧹 System Cleared (Proxies Preserved)", level="main")
-    return {"status": "cleared"}
-
-@app.post("/update_settings")
-async def update_settings(country: str = Form(...), manual_proxy: Optional[str] = Form("")):
-    SETTINGS["country"] = country
-    SETTINGS["proxy_manual"] = manual_proxy
-    return {"status": "updated"}
-
-@app.post("/upload_proxies")
-async def upload_proxies(file: UploadFile = File(...)):
-    with open(PROXY_FILE, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
-    return {"status": "saved"}
-
-@app.post("/upload_numbers")
-async def upload_numbers(file: UploadFile = File(...)):
-    with open(NUMBERS_FILE, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
-    log_msg(f"📂 Numbers File Uploaded", level="main")
-    return {"status": "saved"}
-
-@app.post("/start")
-async def start_bot(bt: BackgroundTasks):
-    global BOT_RUNNING
-    if not BOT_RUNNING:
-        BOT_RUNNING = True
-        bt.add_task(master_loop)
-    return {"status": "started"}
-
-@app.post("/stop")
-async def stop_bot():
-    global BOT_RUNNING
-    BOT_RUNNING = False
-    log_msg("🛑 STOP COMMAND RECEIVED.", level="main")
-    return {"status": "stopping"}
-
 # --- VISUALS ---
 async def capture_step(page, step_name, wait_time=0, force=False):
-    """
-    Force=True: ایرر یا سکسس کے لیے (ہمیشہ کیپچر ہوگا)
-    Force=False: عام سٹیپ (صرف تب جب live_logs = True ہو)
-    """
     if not BOT_RUNNING: return
-    if not live_logs and not force: return # Skip logic
-
+    if not live_logs and not force: return
     if wait_time > 0: await asyncio.sleep(wait_time)
     timestamp = datetime.now().strftime("%H%M%S")
     filename = f"{CAPTURE_DIR}/{timestamp}_{step_name}.jpg"
@@ -211,68 +127,81 @@ async def show_red_dot(page, x, y):
     except: pass
 
 # --- CLICK LOGIC ---
-async def execute_click_strategy(page, element, strategy_id, desc):
+async def click_element(page, finder, name):
     try:
-        await element.scroll_into_view_if_needed()
-        box = await element.bounding_box()
-        if not box: return False
-        
-        cx = box['x'] + box['width'] / 2
-        cy = box['y'] + box['height'] / 2
-        
-        if strategy_id == 1:
-            log_msg(f"🔹 {desc} (Standard)", level="step")
-            await element.click(force=True, timeout=2000)
-        elif strategy_id == 2: # Touch
-            log_msg(f"🔹 {desc} (Tap)", level="step")
-            await show_red_dot(page, cx, cy)
-            await page.touchscreen.tap(cx, cy)
-        
-        return True
+        # User requested Text locators primarily, no button strategy
+        el = finder()
+        if await el.count() > 0:
+            box = await el.first.bounding_box()
+            if box:
+                cx = box['x'] + box['width'] / 2
+                cy = box['y'] + box['height'] / 2
+                log_msg(f"🖱️ Clicking {name}...", level="step")
+                await show_red_dot(page, cx, cy)
+                await page.touchscreen.tap(cx, cy) # Using Tap as it's mobile view
+                return True
+        return False
     except: return False
 
-# 🔥 SMART STEP: Click -> Wait -> Verify Next Element
+# 🔥 SMART ACTION LOGIC (Wait & Retry) 🔥
 async def smart_action(page, finder, verifier, step_name, wait_after=3):
     if not BOT_RUNNING: return False
     
-    # 1. Capture Before
-    await capture_step(page, f"Pre_{step_name}")
-    
-    # 2. Try Clicking
+    # 1. Initial Wait
     try:
-        el = finder()
-        if await el.count() > 0:
-            if await execute_click_strategy(page, el.first, 2, step_name):
-                log_msg(f"⏳ Waiting {wait_after}s...", level="step")
-                await asyncio.sleep(wait_after)
-                
-                # 3. Capture After
+        log_msg(f"🔍 Looking for {step_name}...", level="step")
+        await page.wait_for_selector("body", timeout=5000)
+    except: pass
+
+    # 2. Try Clicking
+    for attempt in range(1, 4): # 3 Attempts
+        if not BOT_RUNNING: return False
+        
+        # Already verified?
+        if verifier and await verifier().count() > 0:
+            log_msg(f"✅ {step_name} Already Done.", level="step")
+            return True
+
+        # Click
+        clicked = await click_element(page, finder, f"{step_name} (Try {attempt})")
+        
+        if clicked:
+            log_msg(f"⏳ Waiting {wait_after}s...", level="step")
+            await asyncio.sleep(wait_after)
+            
+            # 3. VERIFY
+            if verifier and await verifier().count() > 0:
+                log_msg(f"✅ {step_name} Success!", level="step")
                 await capture_step(page, f"Post_{step_name}")
-                
-                # 4. Verify
+                return True
+            
+            # Check if button still there
+            elif await finder().count() > 0:
+                log_msg(f"⚠️ {step_name} click failed (Button visible). Retrying...", level="step")
+                await capture_step(page, f"Fail_{step_name}")
+                continue 
+            
+            # Loading check
+            else:
+                log_msg(f"⏳ Elements gone (Loading?)... Waiting 5s...", level="step")
+                await asyncio.sleep(5)
                 if verifier and await verifier().count() > 0:
-                    log_msg(f"✅ {step_name} Verified", level="step")
+                    log_msg(f"✅ {step_name} Success (After Load)!", level="step")
                     return True
-                elif verifier is None:
-                    return True # No verification needed
                 else:
-                    log_msg(f"⚠️ {step_name} clicked but next element missing. Retrying...", level="step")
-                    return False
+                    log_msg(f"⚠️ Stuck / Loading...", level="step")
+                    await capture_step(page, f"Stuck_{step_name}")
         else:
-            log_msg(f"⚠️ {step_name} button not found.", level="step")
-            return False
-    except Exception as e:
-        log_msg(f"⚠️ Error in {step_name}: {e}", level="step")
-        return False
-    
+            log_msg(f"❌ {step_name} Not Found (Attempt {attempt})", level="step")
+            await asyncio.sleep(2)
+
     return False
 
 # --- WORKER ---
 async def master_loop():
     global BOT_RUNNING
     if not get_strict_proxy():
-        log_msg("⛔ FATAL: No Proxy!", level="main")
-        BOT_RUNNING = False; return
+        log_msg("⛔ FATAL: No Proxy!", level="main"); BOT_RUNNING = False; return
 
     log_msg("🟢 Worker Started.", level="main")
     
@@ -282,9 +211,7 @@ async def master_loop():
             log_msg("ℹ️ No Numbers.", level="main"); BOT_RUNNING = False; break
             
         proxy_cfg = get_strict_proxy()
-        p_show = proxy_cfg['server']
         log_msg(f"🔵 Processing: {current_number}", level="main") 
-        log_msg(f"🌍 Proxy: {p_show}", level="step") 
         
         try:
             res = await run_session(current_number, SETTINGS["country"], proxy_cfg)
@@ -296,7 +223,6 @@ async def master_loop():
                 log_msg("❌ Failed (Hard Skip).", level="main")
                 save_data(FAILED_FILE, current_number)
                 remove_number(current_number)
-            # if 'retry', we don't save/remove, just loop again
             
         except Exception as e:
             log_msg(f"🔥 Crash: {e}", level="main")
@@ -331,56 +257,52 @@ async def run_session(phone, country, proxy):
                 log_msg("⏳ Page Load Wait (5s)...", level="step")
                 await asyncio.sleep(5) 
                 await capture_step(page, "01_Loaded")
-            except:
-                return "retry"
+            except: return "retry"
 
-            # --- STEP 2: REGISTER ---
-            # Loop specifically for Register Click Bug
-            reg_success = False
-            for i in range(3):
-                if await smart_action(
-                    page, 
-                    lambda: page.get_by_text("Register", exact=True),
-                    lambda: page.get_by_text("Agree", exact=True).or_(page.get_by_text("Next", exact=True)),
-                    f"Register_Click_{i+1}",
-                    wait_after=3 # 3s wait
-                ):
-                    reg_success = True; break
-            
-            if not reg_success: return "retry"
-
-            # --- STEP 3: AGREE ---
-            # First tick checkbox if exists (Stay Informed)
-            cb = page.get_by_text("stay informed", exact=False)
-            if await cb.count() > 0: await cb.click()
-            
+            # --- STEP 2: REGISTER (By Text) ---
             if not await smart_action(
-                page,
-                lambda: page.get_by_role("button", name="Agree").or_(page.get_by_role("button", name="Next")),
-                lambda: page.get_by_text("Date of birth", exact=False).or_(page.get_by_text("Next", exact=True)),
-                "Agree_Btn",
+                page, 
+                lambda: page.get_by_text("Register", exact=False), # Finder: Text "Register"
+                lambda: page.get_by_text("Agree", exact=False).or_(page.get_by_text("Stay informed", exact=False)), # Verifier
+                "Register_Text",
                 wait_after=3
             ): return "retry"
 
-            # --- STEP 4: DOB ---
-            # Scroll date a bit
-            await page.mouse.move(200, 500); await page.mouse.down()
-            await page.mouse.move(200, 800, steps=10); await page.mouse.up()
+            # --- STEP 3: AGREE (Text Logic) ---
+            # 1. Stay Informed (Text)
+            cb = page.get_by_text("Stay informed", exact=False)
+            if await cb.count() > 0:
+                log_msg("🖱️ Tapping Stay informed...", level="step")
+                await cb.click()
+                await asyncio.sleep(1)
             
+            # 2. Agree (Last)
+            # User: "Agree text ke tor pe... aur last wala agree"
             if not await smart_action(
                 page,
-                lambda: page.get_by_text("Next", exact=True),
+                lambda: page.get_by_text("Agree", exact=False).last, # Finder: LAST "Agree" text
+                lambda: page.get_by_text("Date of birth", exact=False),
+                "Agree_Last",
+                wait_after=3
+            ): return "retry"
+
+            # --- STEP 4: DOB (No Scroll, Just Next) ---
+            # User: "Scroll khatam... sirf next kare... last wala next"
+            if not await smart_action(
+                page,
+                lambda: page.get_by_text("Next", exact=False).last, # Finder: LAST "Next" text
                 lambda: page.get_by_text("Use phone number", exact=False),
-                "DOB_Next",
+                "DOB_Next_Last",
                 wait_after=3
             ): return "retry"
 
-            # --- STEP 5: PHONE TAB ---
+            # --- STEP 5: PHONE TAB (By Text) ---
+            # User: "Use phone number usko bhi text ke tor pe dhundo"
             if not await smart_action(
                 page,
                 lambda: page.get_by_text("Use phone number", exact=False),
                 lambda: page.get_by_text("Country/Region"), 
-                "UsePhone_Tab",
+                "UsePhone_Text",
                 wait_after=3
             ): return "retry"
 
@@ -406,7 +328,7 @@ async def run_session(phone, country, proxy):
             matches = page.get_by_text(country, exact=False)
             if await matches.count() > 0:
                 await matches.first.click()
-                await asyncio.sleep(3) # 3s wait after select
+                await asyncio.sleep(3) # 3s wait
             else:
                 log_msg("❌ Country Not Found", level="main"); await browser.close(); return "retry"
 
@@ -420,77 +342,143 @@ async def run_session(phone, country, proxy):
                 for c in phone:
                     if not BOT_RUNNING: return "stopped"
                     await page.keyboard.type(c); await asyncio.sleep(0.05)
-                # Tap outside to close keyboard
-                await page.touchscreen.tap(350, 100)
+                await page.touchscreen.tap(350, 100) # Close keyboard
                 await capture_step(page, "05_Filled")
                 
-                # --- STEP 8: GET CODE (THE CRITICAL PART) ---
+                # --- STEP 8: GET CODE (CRITICAL WAIT) ---
                 get_code = page.locator(".get-code-btn").or_(page.get_by_text("Get code"))
                 if await get_code.count() > 0:
                     await get_code.first.click()
                     
                     # 🔥 HARD WAIT 10 SECONDS 🔥
                     log_msg("⏳ Hard Wait: 10s for Captcha...", level="main")
-                    await capture_step(page, "06_Clicked_GetCode", wait_time=5) # Capture at 5s
-                    await asyncio.sleep(5) # Finish the 10s (5 already passed)
-                    await capture_step(page, "07_Wait_Done") # Capture at 10s
+                    await capture_step(page, "06_Clicked_GetCode", wait_time=5) # 5s Capture
+                    await asyncio.sleep(5) # Total 10s
+                    await capture_step(page, "07_Wait_Done")
 
-                    # --- CHECK STATE ---
-                    
-                    # 1. Error Popup? (Hard Skip)
+                    # CHECK STATE
                     if await page.get_by_text("An unexpected problem", exact=False).count() > 0:
                         log_msg("⛔ FATAL: System Error", level="main")
                         await capture_step(page, "Error_Popup", force=True)
                         await browser.close(); return "failed"
 
-                    # 2. Captcha?
+                    # Captcha Logic (Using previous script logic)
                     start_solve_time = time.time()
                     while BOT_RUNNING:
-                        # Safety Timeout (Global 2 mins)
                         if time.time() - start_solve_time > 120: break
 
+                        # 1. CAPTCHA FOUND
                         if await page.get_by_text("swap 2 tiles", exact=False).count() > 0:
                             log_msg("🧩 CAPTCHA FOUND!", level="main")
                             await capture_step(page, "08_Captcha_Found", force=True)
                             
-                            # Call Solver
                             session_id = f"sess_{int(time.time())}"
                             ai_success = await solve_captcha(page, session_id, logger=lambda m: log_msg(m, level="step"))
                             
                             if not ai_success:
                                 log_msg("⚠️ Solver Failed", level="step")
-                                await browser.close(); return "retry" # Retry same number
+                                await browser.close(); return "retry"
                             
-                            await asyncio.sleep(5) # Wait for result
+                            await asyncio.sleep(5)
                             
-                            # Check if still there
+                            # Re-check
                             if await page.get_by_text("swap 2 tiles", exact=False).count() == 0:
                                 log_msg("✅ CAPTCHA SOLVED!", level="main")
                                 await capture_step(page, "Success_Solved", force=True)
                                 await browser.close(); return "success"
                             else:
-                                log_msg("🔁 Captcha still there, retrying...", level="main")
-                                continue # Loop again
+                                log_msg("🔁 Captcha still there...", level="main")
+                                continue
                         
-                        # 3. Success? (Directly Sent)
+                        # 2. SUCCESS (DIRECT)
                         if await page.get_by_text("sent", exact=False).count() > 0:
-                            log_msg("✅ CODE SENT (No Captcha)!", level="main")
+                            log_msg("✅ CODE SENT (Direct)!", level="main")
                             await capture_step(page, "Success_Direct", force=True)
                             await browser.close(); return "success"
                         
-                        # 4. Nothing happened after 10s wait?
-                        log_msg("❌ No Captcha & No Success (Hard Skip).", level="main")
+                        # 3. NOTHING (HARD SKIP)
+                        log_msg("❌ No Captcha & No Success.", level="main")
                         await capture_step(page, "Error_Nothing", force=True)
                         await browser.close(); return "failed"
 
                 else:
-                    log_msg("❌ Get Code Button not found", level="step")
+                    log_msg("❌ Get Code Missing", level="step")
                     return "retry"
 
             await browser.close(); return "retry"
 
     except Exception as e:
-        log_msg(f"❌ Session Error: {str(e)}", level="main")
-        await capture_step(page, "Error_Crash", force=True)
+        log_msg(f"❌ Error: {str(e)}", level="main")
         return "retry"
     except: return "retry"
+
+# --- API ENDPOINTS (RESTORED) ---
+@app.get("/")
+async def read_index(): return FileResponse('index.html')
+
+@app.get("/status")
+async def get_status():
+    files = sorted(glob.glob(f'{CAPTURE_DIR}/*.jpg'), key=os.path.getmtime, reverse=True)[:10]
+    images = [f"/captures/{os.path.basename(f)}" for f in files]
+    p_check = get_strict_proxy()
+    p_disp = p_check['server'] if p_check else "❌ No Proxy"
+    stats = {
+        "remaining": count_lines(NUMBERS_FILE),
+        "success": count_lines(SUCCESS_FILE),
+        "failed": count_lines(FAILED_FILE)
+    }
+    return JSONResponse({
+        "logs": logs[:50], 
+        "images": images, 
+        "running": BOT_RUNNING, 
+        "current_country": SETTINGS["country"], 
+        "current_proxy": p_disp,
+        "stats": stats
+    })
+
+@app.get("/download/{ftype}")
+async def download_file(ftype: str):
+    fname = f"{ftype}.txt"
+    if os.path.exists(fname): return FileResponse(fname, filename=fname)
+    return {"error": "File not found"}
+
+@app.post("/clear_data")
+async def clear_data():
+    global logs
+    logs = []
+    open(NUMBERS_FILE, 'w').close()
+    open(SUCCESS_FILE, 'w').close()
+    open(FAILED_FILE, 'w').close()
+    for f in glob.glob(f'{CAPTURE_DIR}/*'): os.remove(f)
+    return {"status": "cleared"}
+
+@app.post("/update_settings")
+async def update_settings(country: str = Form(...), manual_proxy: Optional[str] = Form("")):
+    SETTINGS["country"] = country
+    SETTINGS["proxy_manual"] = manual_proxy
+    return {"status": "updated"}
+
+@app.post("/upload_proxies")
+async def upload_proxies(file: UploadFile = File(...)):
+    with open(PROXY_FILE, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
+    return {"status": "saved"}
+
+@app.post("/upload_numbers")
+async def upload_numbers(file: UploadFile = File(...)):
+    with open(NUMBERS_FILE, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
+    return {"status": "saved"}
+
+@app.post("/start")
+async def start_bot(bt: BackgroundTasks):
+    global BOT_RUNNING
+    if not BOT_RUNNING:
+        BOT_RUNNING = True
+        bt.add_task(master_loop)
+    return {"status": "started"}
+
+@app.post("/stop")
+async def stop_bot():
+    global BOT_RUNNING
+    BOT_RUNNING = False
+    log_msg("🛑 STOP COMMAND RECEIVED.", level="main")
+    return {"status": "stopping"}

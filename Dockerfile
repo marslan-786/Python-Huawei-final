@@ -1,29 +1,21 @@
-# 1. Base Image (Playwright Official)
+# 1. Official Playwright Image (Is mein saari system libraries pehle se hain)
 FROM mcr.microsoft.com/playwright/python:v1.40.0-jammy
 
-# 2. Work Directory
+# 2. Setup Work Directory
 WORKDIR /app
 
-# 3. 🔥 Install System Dependencies (Ye line Railway par crash rokne ke liye zaroori hai)
-RUN apt-get update && apt-get install -y \
-    libgl1 \
-    libglib2.0-0 \
-    && rm -rf /var/lib/apt/lists/*
-
-# 4. Copy Requirements
+# 3. Copy Requirements & Install Python Packages
 COPY requirements.txt .
-
-# 5. Install Python Packages
 RUN pip install --no-cache-dir -U -r requirements.txt
 
-# 6. Install Browsers
+# 4. Install Browsers (Sirf Chromium chahiye, baqi nahi)
 RUN playwright install chromium
 
-# 7. Copy Code
+# 5. Copy Your Code
 COPY . .
 
-# 8. Create Captures Folder & Permissions
+# 6. Create Captures Folder & Permissions (Yeh zaroori hai taake error na aye)
 RUN mkdir -p captures && chmod 777 captures
 
-# 9. Start Command (Railway Port Handling)
+# 7. Start Command (Jo aap ne di thi, wahi rakhi hai taake Port ka masla na ho)
 CMD sh -c "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}"

@@ -4,7 +4,6 @@ import asyncio
 import random
 import time
 import shutil
-import imageio
 from datetime import datetime
 from typing import Optional
 from urllib.parse import urlparse
@@ -36,6 +35,7 @@ app.mount("/captures", StaticFiles(directory=CAPTURE_DIR), name="captures")
 for f in [NUMBERS_FILE, SUCCESS_FILE, FAILED_FILE, PROXY_FILE]:
     if not os.path.exists(f): open(f, 'w').close()
 
+# --- CAPTCHA SOLVER IMPORT (UNCHANGED) ---
 try:
     from captcha_solver import solve_captcha
 except ImportError:
@@ -141,28 +141,29 @@ async def click_element(page, finder, name):
                 
                 log_msg(f"🖱️ Tapping {name}...", level="step")
                 await show_red_dot(page, cx, cy)
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(0.3)
                 await page.touchscreen.tap(cx, cy)
                 return True
         return False
     except: return False
 
-# 🔥 SMART ACTION LOGIC 🔥
+# 🔥 SMART ACTION (Strict Verification + Wait) 🔥
 async def smart_action(page, finder, verifier, step_name, wait_after=5):
     if not BOT_RUNNING: return False
     
-    log_msg(f"🔍 Checking for {step_name}...", level="step")
+    log_msg(f"🔍 Action: {step_name}...", level="step")
     await capture_step(page, f"Pre_{step_name}")
 
     for attempt in range(1, 4): 
         if not BOT_RUNNING: return False
         
-        # Unique check for NON-Register steps
+        # Check if already done (Except Register which needs force)
         if step_name != "Register_Text":
             if verifier and await verifier().count() > 0:
                 log_msg(f"✅ {step_name} Already Done.", level="step")
                 return True
 
+        # Click
         clicked = await click_element(page, finder, f"{step_name} (Try {attempt})")
         
         if clicked:
@@ -170,20 +171,25 @@ async def smart_action(page, finder, verifier, step_name, wait_after=5):
             log_msg(f"⏳ Waiting {wait_after}s...", level="step")
             await asyncio.sleep(wait_after)
             
+            # Capture Result
+            await capture_step(page, f"Post_{step_name}_{attempt}")
+            
+            # Verify
             if verifier and await verifier().count() > 0:
                 log_msg(f"✅ {step_name} Success!", level="step")
-                await capture_step(page, f"Post_{step_name}")
                 return True
+            
+            # Failed?
             elif await finder().count() > 0:
                 log_msg(f"⚠️ {step_name} click failed. Retrying...", level="step")
-                await capture_step(page, f"Fail_{step_name}")
                 continue 
+            
+            # Loading?
             else:
                 log_msg(f"⏳ Loading... Waiting 5s...", level="step")
                 await asyncio.sleep(5)
                 if verifier and await verifier().count() > 0:
                     log_msg(f"✅ {step_name} Success (After Load)!", level="step")
-                    await capture_step(page, f"Post_{step_name}_Delayed")
                     return True
                 else:
                     log_msg(f"⚠️ Stuck / Loading...", level="step")
@@ -251,21 +257,23 @@ async def run_session(phone, country, proxy):
             try:
                 if not BOT_RUNNING: return "stopped"
                 await page.goto(BASE_URL, timeout=90000)
+                
+                # 🔥 INITIAL 5s WAIT
                 log_msg("⏳ Page Load Wait (5s)...", level="step")
                 await asyncio.sleep(5) 
                 await capture_step(page, "01_Loaded")
             except: return "retry"
 
-            # --- STEP 2: REGISTER ---
+            # --- STEP 2: REGISTER (Strict Verify) ---
             if not await smart_action(
                 page, 
-                lambda: page.get_by_text("Register", exact=True), # Force Exact Match
-                lambda: page.get_by_role("button", name="Agree").or_(page.get_by_text("Stay informed", exact=False)), 
+                lambda: page.get_by_text("Register", exact=True), # Strict Text
+                lambda: page.get_by_text("Stay informed", exact=False), 
                 "Register_Text",
                 wait_after=5
             ): return "retry"
 
-            # --- STEP 3: AGREE ---
+            # --- STEP 3: AGREE PAGE ---
             cb = page.get_by_text("Stay informed", exact=False)
             if await cb.count() > 0:
                 await click_element(page, lambda: cb, "Stay Informed Checkbox")
@@ -279,7 +287,7 @@ async def run_session(phone, country, proxy):
                 wait_after=5
             ): return "retry"
 
-            # --- STEP 4: DOB ---
+            # --- STEP 4: DOB (Next Text) ---
             if not await smart_action(
                 page,
                 lambda: page.get_by_text("Next", exact=False).last, 
@@ -288,7 +296,7 @@ async def run_session(phone, country, proxy):
                 wait_after=5
             ): return "retry"
 
-            # --- STEP 5: PHONE TAB ---
+            # --- STEP 5: PHONE TAB (Text) ---
             if not await smart_action(
                 page,
                 lambda: page.get_by_text("Use phone number", exact=False),
@@ -336,21 +344,24 @@ async def run_session(phone, country, proxy):
                 await page.touchscreen.tap(350, 100) 
                 await capture_step(page, "05_Filled")
                 
-                # --- STEP 8: GET CODE ---
+                # --- STEP 8: GET CODE (OLD LOGIC RESTORED) ---
                 get_code = page.locator(".get-code-btn").or_(page.get_by_text("Get code"))
                 if await get_code.count() > 0:
                     
                     await click_element(page, lambda: get_code.first, "Get Code Button")
                     
+                    # 🔥 10 SECONDS WAIT 🔥
                     log_msg("⏳ Hard Wait: 10s for Captcha...", level="main")
                     await asyncio.sleep(5); await capture_step(page, "06_Wait_5s_Check")
                     await asyncio.sleep(5); await capture_step(page, "07_Wait_10s_Check")
 
+                    # Error Popup Check
                     if await page.get_by_text("An unexpected problem", exact=False).count() > 0:
                         log_msg("⛔ FATAL: System Error", level="main")
                         await capture_step(page, "Error_Popup", force=True)
                         await browser.close(); return "failed"
 
+                    # Captcha Logic (Exactly from old script)
                     start_solve_time = time.time()
                     while BOT_RUNNING:
                         if time.time() - start_solve_time > 120: break
@@ -360,6 +371,7 @@ async def run_session(phone, country, proxy):
                             await capture_step(page, "08_Captcha_Found", force=True)
                             
                             session_id = f"sess_{int(time.time())}"
+                            # 🔥 OLD METHOD: Just pass session_id, solver handles screenshot
                             ai_success = await solve_captcha(page, session_id, logger=lambda m: log_msg(m, level="step"))
                             
                             if not ai_success:

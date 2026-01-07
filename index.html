@@ -91,8 +91,8 @@
             </div>
 
             <div class="modal-actions">
-                <button class="btn-save" onclick="saveSettings()">Save</button>
-                <button class="btn-clear" onclick="document.getElementById('manualProxy').value=''"><i class="fas fa-eraser"></i> Clear Proxy</button>
+                <button class="btn-save" onclick="saveSettings()">Save Configuration</button>
+                <button class="btn-clear" onclick="clearProxyData()"><i class="fas fa-eraser"></i> Clear All Proxies</button>
             </div>
         </div>
     </div>
@@ -100,7 +100,7 @@
     <div id="galleryModal" class="modal">
         <div class="modal-content" style="max-width: 800px;">
             <div class="modal-header">
-                <h3>📸 Critical Events</h3>
+                <h3>📸 Live Session Gallery</h3>
                 <button class="icon-btn" onclick="toggleModal('galleryModal')"><i class="fas fa-times"></i></button>
             </div>
             <div class="gallery-grid" id="galleryGrid"></div>
@@ -160,22 +160,32 @@
     </div>
 
     <script>
-        // --- LOGIC ---
-        const countries = ["Russia", "Pakistan", "United Kingdom", "United States", "China"]; // Add more if needed
+        const countries = ["Russia", "Pakistan", "United Kingdom", "United States", "China"];
         let isRunning = false;
+        let userScrolledUp = false; // Flag for Smart Scroll
 
         window.onload = function() {
             const sel = document.getElementById('countrySelect');
             countries.forEach(c => {
-                if(c !== "Russia") { // Russia is already there
+                if(c !== "Russia") {
                     let opt = document.createElement('option');
                     opt.value = c; opt.innerText = c;
                     sel.appendChild(opt);
                 }
             });
-            // Restore Settings
             if(localStorage.getItem('lastCountry')) sel.value = localStorage.getItem('lastCountry');
             if(localStorage.getItem('manualProxy')) document.getElementById('manualProxy').value = localStorage.getItem('manualProxy');
+
+            // Terminal Scroll Listener
+            const term = document.getElementById('terminal');
+            term.addEventListener('scroll', () => {
+                // If user is near bottom (within 20px), enable auto-scroll. Else disable.
+                if (term.scrollTop + term.clientHeight >= term.scrollHeight - 20) {
+                    userScrolledUp = false;
+                } else {
+                    userScrolledUp = true;
+                }
+            });
         };
 
         async function uploadFile(inputId, endpoint, labelId) {
@@ -202,6 +212,25 @@
             document.getElementById('settingsModal').style.display = 'none';
         }
 
+        async function clearProxyData() {
+            if(!confirm("⚠️ Clear ALL proxies? (File and Manual Input)")) return;
+            
+            // Clear UI
+            document.getElementById('manualProxy').value = "";
+            document.getElementById('proxyFileName').innerText = "Click to Upload Proxies.txt";
+            
+            // Clear Backend File (We reuse the clear_data logic but restricted ideally, 
+            // but since there's no dedicated endpoint, we upload an empty file)
+            const emptyFile = new File([""], "proxies.txt", {type: "text/plain"});
+            const formData = new FormData();
+            formData.append('file', emptyFile);
+            
+            await fetch('/upload_proxies', { method: 'POST', body: formData }); // Overwrite with empty
+            await saveSettings(); // Clear manual proxy in backend settings
+            
+            alert("Proxies Cleared!");
+        }
+
         async function toggleBot() {
             const btn = document.getElementById('mainBtn');
             if (!isRunning) {
@@ -217,7 +246,7 @@
         }
 
         async function clearFullSystem() {
-            if(!confirm("⚠️ This will clear ALL logs, stats, success/failed files, and numbers.txt. Proxies will remain. Continue?")) return;
+            if(!confirm("⚠️ Clear Logs, Stats, Numbers & Results? (Proxies remain)")) return;
             await fetch('/clear_data', {method: 'POST'});
             document.getElementById('terminal').innerHTML = "<div>> System Fully Cleared.</div>";
             document.getElementById('countTotal').innerText = "0";
@@ -237,8 +266,6 @@
 
         async function openGallery() {
             toggleModal('galleryModal');
-            // Backend images will be populated by pollStatus logic implicitly 
-            // or we can refresh here if needed, but polling handles it.
         }
 
         async function pollStatus() {
@@ -246,20 +273,24 @@
                 const res = await fetch('/status');
                 const data = await res.json();
                 
-                // Update Logs
+                // --- SMART TERMINAL LOGIC ---
                 const term = document.getElementById('terminal');
                 const newHTML = data.logs.map(l => `<div>${l}</div>`).join('');
+                
                 if(term.innerHTML !== newHTML) {
                     term.innerHTML = newHTML;
-                    term.scrollTop = term.scrollHeight;
+                    // Only scroll if user hasn't scrolled up
+                    if (!userScrolledUp) {
+                        term.scrollTop = term.scrollHeight;
+                    }
                 }
 
-                // Update Stats (From Backend)
+                // Stats
                 document.getElementById('countTotal').innerText = data.stats.remaining;
                 document.getElementById('countSuccess').innerText = data.stats.success;
                 document.getElementById('countFailed').innerText = data.stats.failed;
 
-                // Sync Running State
+                // Sync State
                 const btn = document.getElementById('mainBtn');
                 if (data.running && !isRunning) {
                     isRunning = true; btn.innerText = "STOP"; btn.className = "btn-control stop";
@@ -267,7 +298,7 @@
                     isRunning = false; btn.innerText = "START"; btn.className = "btn-control start";
                 }
 
-                // Gallery Update
+                // Gallery Logic
                 if(document.getElementById('galleryModal').style.display === 'flex') {
                     const grid = document.getElementById('galleryGrid');
                     if (data.images.length === 0) {

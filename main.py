@@ -15,10 +15,6 @@ from playwright.async_api import async_playwright
 # --- 🔥 USER SETTINGS ---
 live_logs = True 
 
-# --- 🔥 HARDCODED SCRAPER API ---
-API_KEY = '9643e678c2fa6efe4d2c7cf7b2206be0'
-SCRAPER_PROXY_URL = f"http://scraperapi.residential=true:{API_KEY}@proxy-server.scraperapi.com:8001"
-
 # --- CONFIG ---
 CAPTURE_DIR = "./captures"
 NUMBERS_FILE = "numbers.txt"
@@ -35,7 +31,7 @@ app.mount("/captures", StaticFiles(directory=CAPTURE_DIR), name="captures")
 for f in [NUMBERS_FILE, SUCCESS_FILE, FAILED_FILE, PROXY_FILE]:
     if not os.path.exists(f): open(f, 'w').close()
 
-# --- CAPTCHA SOLVER IMPORT (UNCHANGED) ---
+# --- CAPTCHA SOLVER IMPORT ---
 try:
     from captcha_solver import solve_captcha
 except ImportError:
@@ -44,6 +40,7 @@ except ImportError:
 SETTINGS = {"country": "Russia", "proxy_manual": ""}
 BOT_RUNNING = False
 logs = []
+PROXY_INDEX = 0 # Track Line-by-Line Proxy
 
 # --- HELPERS ---
 def log_msg(message, level="step"):
@@ -74,7 +71,7 @@ def count_lines(filename):
     if not os.path.exists(filename): return 0
     with open(filename, "r") as f: return len([l for l in f if l.strip()])
 
-# --- PROXY ---
+# --- PROXY LOGIC (Line-by-Line) ---
 def parse_proxy_string(proxy_str):
     if not proxy_str or len(proxy_str) < 5: return None
     p = proxy_str.strip()
@@ -90,16 +87,31 @@ def parse_proxy_string(proxy_str):
         return cfg
     except: return None
 
-def get_strict_proxy():
+def get_sequential_proxy():
+    global PROXY_INDEX
+    
+    # 1. Manual Proxy (Top Priority)
     if SETTINGS["proxy_manual"] and len(SETTINGS["proxy_manual"]) > 5:
         return parse_proxy_string(SETTINGS["proxy_manual"])
+    
+    # 2. File Proxy (Line by Line)
     if os.path.exists(PROXY_FILE):
         try:
             with open(PROXY_FILE, 'r') as f:
                 lines = [l.strip() for l in f.readlines() if l.strip()]
-            if lines: return parse_proxy_string(random.choice(lines))
+            
+            if lines:
+                if PROXY_INDEX >= len(lines):
+                    PROXY_INDEX = 0 # Loop back to start
+                
+                selected_proxy = lines[PROXY_INDEX]
+                PROXY_INDEX += 1 # Move to next line for next number
+                
+                return parse_proxy_string(selected_proxy)
         except: pass
-    return parse_proxy_string(SCRAPER_PROXY_URL)
+    
+    # 3. Direct Internet (No ScraperAPI anymore)
+    return None 
 
 # --- VISUALS ---
 async def capture_step(page, step_name, wait_time=0, force=False):
@@ -147,7 +159,7 @@ async def click_element(page, finder, name):
         return False
     except: return False
 
-# 🔥 SMART ACTION (Strict Verification + Wait) 🔥
+# 🔥 SMART ACTION 🔥
 async def smart_action(page, finder, verifier, step_name, wait_after=5):
     if not BOT_RUNNING: return False
     
@@ -157,13 +169,11 @@ async def smart_action(page, finder, verifier, step_name, wait_after=5):
     for attempt in range(1, 4): 
         if not BOT_RUNNING: return False
         
-        # Check if already done (Except Register which needs force)
         if step_name != "Register_Text":
             if verifier and await verifier().count() > 0:
                 log_msg(f"✅ {step_name} Already Done.", level="step")
                 return True
 
-        # Click
         clicked = await click_element(page, finder, f"{step_name} (Try {attempt})")
         
         if clicked:
@@ -171,20 +181,14 @@ async def smart_action(page, finder, verifier, step_name, wait_after=5):
             log_msg(f"⏳ Waiting {wait_after}s...", level="step")
             await asyncio.sleep(wait_after)
             
-            # Capture Result
             await capture_step(page, f"Post_{step_name}_{attempt}")
-            
-            # Verify
+
             if verifier and await verifier().count() > 0:
                 log_msg(f"✅ {step_name} Success!", level="step")
                 return True
-            
-            # Failed?
             elif await finder().count() > 0:
                 log_msg(f"⚠️ {step_name} click failed. Retrying...", level="step")
                 continue 
-            
-            # Loading?
             else:
                 log_msg(f"⏳ Loading... Waiting 5s...", level="step")
                 await asyncio.sleep(5)
@@ -203,9 +207,8 @@ async def smart_action(page, finder, verifier, step_name, wait_after=5):
 # --- WORKER ---
 async def master_loop():
     global BOT_RUNNING
-    if not get_strict_proxy():
-        log_msg("⛔ FATAL: No Proxy!", level="main"); BOT_RUNNING = False; return
-
+    # Note: No strict proxy check needed now as we allow Direct Internet
+    
     log_msg("🟢 Worker Started.", level="main")
     
     while BOT_RUNNING:
@@ -213,8 +216,11 @@ async def master_loop():
         if not current_number:
             log_msg("ℹ️ No Numbers.", level="main"); BOT_RUNNING = False; break
             
-        proxy_cfg = get_strict_proxy()
-        log_msg(f"🔵 Processing: {current_number}", level="main") 
+        # Get Proxy (Sequential)
+        proxy_cfg = get_sequential_proxy()
+        p_display = proxy_cfg['server'] if proxy_cfg else "🌐 Direct Internet"
+        
+        log_msg(f"🔵 Processing: {current_number} | Using: {p_display}", level="main") 
         
         try:
             res = await run_session(current_number, SETTINGS["country"], proxy_cfg)
@@ -239,7 +245,7 @@ async def run_session(phone, country, proxy):
                 "headless": True, 
                 "args": ["--disable-blink-features=AutomationControlled", "--no-sandbox", "--ignore-certificate-errors", "--disable-web-security"]
             }
-            launch_args["proxy"] = proxy 
+            if proxy: launch_args["proxy"] = proxy 
 
             log_msg("🚀 Launching...", level="step")
             try: browser = await p.chromium.launch(**launch_args)
@@ -257,23 +263,21 @@ async def run_session(phone, country, proxy):
             try:
                 if not BOT_RUNNING: return "stopped"
                 await page.goto(BASE_URL, timeout=90000)
-                
-                # 🔥 INITIAL 5s WAIT
                 log_msg("⏳ Page Load Wait (5s)...", level="step")
                 await asyncio.sleep(5) 
                 await capture_step(page, "01_Loaded")
             except: return "retry"
 
-            # --- STEP 2: REGISTER (Strict Verify) ---
+            # --- STEP 2: REGISTER ---
             if not await smart_action(
                 page, 
-                lambda: page.get_by_text("Register", exact=True), # Strict Text
+                lambda: page.get_by_text("Register", exact=True), 
                 lambda: page.get_by_text("Stay informed", exact=False), 
                 "Register_Text",
                 wait_after=5
             ): return "retry"
 
-            # --- STEP 3: AGREE PAGE ---
+            # --- STEP 3: AGREE ---
             cb = page.get_by_text("Stay informed", exact=False)
             if await cb.count() > 0:
                 await click_element(page, lambda: cb, "Stay Informed Checkbox")
@@ -287,7 +291,7 @@ async def run_session(phone, country, proxy):
                 wait_after=5
             ): return "retry"
 
-            # --- STEP 4: DOB (Next Text) ---
+            # --- STEP 4: DOB ---
             if not await smart_action(
                 page,
                 lambda: page.get_by_text("Next", exact=False).last, 
@@ -296,7 +300,7 @@ async def run_session(phone, country, proxy):
                 wait_after=5
             ): return "retry"
 
-            # --- STEP 5: PHONE TAB (Text) ---
+            # --- STEP 5: PHONE TAB ---
             if not await smart_action(
                 page,
                 lambda: page.get_by_text("Use phone number", exact=False),
@@ -329,14 +333,22 @@ async def run_session(phone, country, proxy):
             else:
                 log_msg("❌ Country Not Found", level="main"); await browser.close(); return "retry"
 
-            # --- STEP 7: INPUT PHONE ---
+            # --- STEP 7: INPUT PHONE (CLEANED) ---
             inp = page.locator("input[type='tel']").first
             if await inp.count() == 0: inp = page.locator("input").first
             
             if await inp.count() > 0:
-                log_msg("🔢 Inputting Phone...", level="step")
+                # 🔥 CLEAN PHONE NUMBER LOGIC
+                clean_phone = phone
+                if country == "Russia" and clean_phone.startswith("7"):
+                    clean_phone = clean_phone[1:] # Remove '7'
+                elif country == "Pakistan" and clean_phone.startswith("92"):
+                    clean_phone = clean_phone[2:] # Remove '92'
+                # Add more country rules here if needed
+                
+                log_msg(f"🔢 Inputting: {clean_phone} (Cleaned)", level="step")
                 await inp.click()
-                for c in phone:
+                for c in clean_phone:
                     if not BOT_RUNNING: return "stopped"
                     await page.keyboard.type(c); await asyncio.sleep(0.05)
                 
@@ -344,24 +356,21 @@ async def run_session(phone, country, proxy):
                 await page.touchscreen.tap(350, 100) 
                 await capture_step(page, "05_Filled")
                 
-                # --- STEP 8: GET CODE (OLD LOGIC RESTORED) ---
+                # --- STEP 8: GET CODE ---
                 get_code = page.locator(".get-code-btn").or_(page.get_by_text("Get code"))
                 if await get_code.count() > 0:
                     
                     await click_element(page, lambda: get_code.first, "Get Code Button")
                     
-                    # 🔥 10 SECONDS WAIT 🔥
                     log_msg("⏳ Hard Wait: 10s for Captcha...", level="main")
                     await asyncio.sleep(5); await capture_step(page, "06_Wait_5s_Check")
                     await asyncio.sleep(5); await capture_step(page, "07_Wait_10s_Check")
 
-                    # Error Popup Check
                     if await page.get_by_text("An unexpected problem", exact=False).count() > 0:
                         log_msg("⛔ FATAL: System Error", level="main")
                         await capture_step(page, "Error_Popup", force=True)
                         await browser.close(); return "failed"
 
-                    # Captcha Logic (Exactly from old script)
                     start_solve_time = time.time()
                     while BOT_RUNNING:
                         if time.time() - start_solve_time > 120: break
@@ -371,7 +380,6 @@ async def run_session(phone, country, proxy):
                             await capture_step(page, "08_Captcha_Found", force=True)
                             
                             session_id = f"sess_{int(time.time())}"
-                            # 🔥 OLD METHOD: Just pass session_id, solver handles screenshot
                             ai_success = await solve_captcha(page, session_id, logger=lambda m: log_msg(m, level="step"))
                             
                             if not ai_success:
@@ -406,7 +414,7 @@ async def run_session(phone, country, proxy):
         log_msg(f"❌ Error: {str(e)}", level="main"); return "retry"
     except: return "retry"
 
-# --- API ENDPOINTS (No Changes) ---
+# --- API ENDPOINTS ---
 @app.get("/")
 async def read_index(): return FileResponse('index.html')
 
@@ -414,8 +422,11 @@ async def read_index(): return FileResponse('index.html')
 async def get_status():
     files = sorted(glob.glob(f'{CAPTURE_DIR}/*.jpg'), key=os.path.getmtime, reverse=True)[:10]
     images = [f"/captures/{os.path.basename(f)}" for f in files]
-    p_check = get_strict_proxy()
-    p_disp = p_check['server'] if p_check else "❌ No Proxy"
+    
+    # Simple Proxy Check for UI
+    p_check = get_sequential_proxy() # Just to see what's next, won't increment here
+    p_disp = p_check['server'] if p_check else "🌐 Direct Internet"
+    
     stats = {
         "remaining": count_lines(NUMBERS_FILE),
         "success": count_lines(SUCCESS_FILE),
@@ -455,6 +466,8 @@ async def update_settings(country: str = Form(...), manual_proxy: Optional[str] 
 @app.post("/upload_proxies")
 async def upload_proxies(file: UploadFile = File(...)):
     with open(PROXY_FILE, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
+    count = count_lines(PROXY_FILE)
+    log_msg(f"🌐 Proxies Uploaded: {count}", level="main")
     return {"status": "saved"}
 
 @app.post("/upload_numbers")
